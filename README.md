@@ -7,7 +7,7 @@ Web-based palmprint recognition app that now supports two operating modes:
 ## Requirements
 
 - Python 3.10+
-- `models/embedding_new_roi_v2/model.tflite` by default, or set `MODEL_VERSION=<version>` for `models/<version>/model.tflite`
+- `models/final/model.tflite` by default, or set `MODEL_VERSION=<version>` for `models/<version>/model.tflite`
 - `model_metadata.json` next to the selected model if available
 - `hand_landmarker.task` in the project root
 - Browser MediaPipe assets in `app/static/vendor/mediapipe/` for offline browser hand detection

@@ -199,7 +199,8 @@ class PalmProcessor:
 
     def preprocess_roi(self, roi: np.ndarray) -> np.ndarray:
         gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-        enhanced = self.apply_clahe(gray)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        enhanced = self.apply_clahe(blurred)
         rgb = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
         resized = cv2.resize(rgb, IMG_SIZE, interpolation=cv2.INTER_CUBIC)
         return resized.astype(np.float32)
