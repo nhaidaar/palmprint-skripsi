@@ -24,4 +24,14 @@ describe('dashboard stylesheet parity', () => {
     expect(staticJs).toContain('user-action-btn danger')
     expect(staticJs).not.toContain('user-chip')
   })
+
+  it('includes polished log filter styles', () => {
+    const css = readFileSync(join(import.meta.dirname, 'styles.css'), 'utf8')
+
+    expect(css).toContain('.log-filters')
+    expect(css).toContain('.log-filter-label')
+    expect(css).toContain('.log-search-wrap')
+    expect(css).toContain('.log-filter-hint')
+    expect(css).toContain('.btn-spinner')
+  })
 })

@@ -59,7 +59,8 @@ export function LogPanel({ active, refreshKey = 0 }: LogPanelProps) {
   }, [loadLogs, refreshKey])
 
   const pages = Math.max(1, Math.ceil(count / PAGE_SIZE))
-  const exportHref = `/api/logs/export.csv${buildQuery({
+  const filtersActive = Boolean(searchQ || filters.status || filters.startDate || filters.endDate)
+  const exportHref = `/api/logs/export.xlsx${buildQuery({
     q: filters.q,
     status: filters.status,
     start_date: filters.startDate,
@@ -70,53 +71,83 @@ export function LogPanel({ active, refreshKey = 0 }: LogPanelProps) {
     <section className={`panel${active ? ' active' : ''}`} id="panel-log">
       <div className="log-header">
         <h2 className="log-title">Access log</h2>
-        <a className="btn btn-ghost btn-refresh" href={exportHref} download>
-          Export CSV
-        </a>
-        <button className="btn btn-ghost btn-refresh" id="btnRefresh" type="button" onClick={() => void loadLogs()} disabled={busy}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="M14 8A6 6 0 112 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            <path d="M14 4v4h-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          Refresh
-        </button>
+        <div className="log-header-actions">
+          <a className="btn btn-ghost btn-refresh" href={exportHref} download>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 2v8m0 0 3-3m-3 3L5 7M3 13h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Export Excel
+          </a>
+          <button className="btn btn-ghost btn-refresh" id="btnRefresh" type="button" onClick={() => void loadLogs()} disabled={busy}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M14 8A6 6 0 112 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <path d="M14 4v4h-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Refresh
+          </button>
+        </div>
       </div>
 
-      <div className="log-filters">
-        <input
-          className="field-input"
-          type="search"
-          placeholder="Search logs…"
-          value={searchQ}
-          onChange={(event) => setSearchQ(event.target.value)}
-        />
-        <select
-          className="field-input"
-          value={filters.status}
-          onChange={(event) => setFilters((current) => nextLogFilters(current, { status: event.target.value as typeof filters.status }))}
+      <div className="log-filters" role="group" aria-label="Access log filters">
+        <label className="log-filter-field log-filter-search">
+          <span className="log-filter-label">Search</span>
+          <span className="log-search-wrap">
+            <svg className="log-search-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.5" />
+              <path d="m10.5 10.5 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            <input
+              className="field-input log-filter-input log-search-input"
+              type="search"
+              placeholder="Search name, NIM, or description"
+              value={searchQ}
+              onChange={(event) => setSearchQ(event.target.value)}
+            />
+          </span>
+        </label>
+        <label className="log-filter-field">
+          <span className="log-filter-label">Status</span>
+          <select
+            className="field-input log-filter-input"
+            value={filters.status}
+            onChange={(event) => setFilters((current) => nextLogFilters(current, { status: event.target.value as typeof filters.status }))}
+          >
+            <option value="">All statuses</option>
+            <option value="ALLOWED">Allowed</option>
+            <option value="DENIED">Denied</option>
+          </select>
+        </label>
+        <label className="log-filter-field">
+          <span className="log-filter-label">From</span>
+          <input
+            className="field-input log-filter-input"
+            type="date"
+            value={filters.startDate}
+            onChange={(event) => setFilters((current) => nextLogFilters(current, { startDate: event.target.value }))}
+          />
+        </label>
+        <label className="log-filter-field">
+          <span className="log-filter-label">To</span>
+          <input
+            className="field-input log-filter-input"
+            type="date"
+            value={filters.endDate}
+            onChange={(event) => setFilters((current) => nextLogFilters(current, { endDate: event.target.value }))}
+          />
+        </label>
+        <button
+          className="btn btn-ghost log-filter-clear"
+          type="button"
+          disabled={!filtersActive}
+          onClick={() => { setSearchQ(''); setFilters(emptyLogFilters) }}
         >
-          <option value="">All statuses</option>
-          <option value="ALLOWED">Allowed</option>
-          <option value="DENIED">Denied</option>
-        </select>
-        <input
-          className="field-input"
-          type="date"
-          aria-label="Start date"
-          value={filters.startDate}
-          onChange={(event) => setFilters((current) => nextLogFilters(current, { startDate: event.target.value }))}
-        />
-        <input
-          className="field-input"
-          type="date"
-          aria-label="End date"
-          value={filters.endDate}
-          onChange={(event) => setFilters((current) => nextLogFilters(current, { endDate: event.target.value }))}
-        />
-        <button className="btn btn-ghost" type="button" onClick={() => { setSearchQ(''); setFilters(emptyLogFilters) }}>
           Clear
         </button>
       </div>
+      <p className="log-filter-hint">
+        <span className="log-filter-hint-dot" aria-hidden="true" />
+        Results and Excel export use the same active filters
+      </p>
 
       {error && <div className="log-empty">{error}</div>}
 

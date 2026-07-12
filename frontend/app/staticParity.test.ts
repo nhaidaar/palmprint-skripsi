@@ -71,6 +71,10 @@ describe('dashboard static UI parity', () => {
     expect(html).toContain('id="logPagination"')
     expect(html).toContain('id="btnLogPrev"')
     expect(html).toContain('id="btnLogNext"')
+    expect(html).toContain('Export Excel')
+    expect(html).toContain('aria-label="Access log filters"')
+    expect(html).toContain('Search name, NIM, or description')
+    expect(html).toContain('Results and Excel export use the same active filters')
   })
 
   it('renders the dedicated user management table structure', () => {

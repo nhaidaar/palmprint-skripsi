@@ -3,11 +3,14 @@ from pathlib import Path
 
 def test_docker_requirements_use_active_runtime_dependencies():
     requirements = Path("requirements.docker.txt").read_text()
+    desktop_requirements = Path("requirements.txt").read_text()
 
     assert "mediapipe" in requirements
     assert "opencv-python-headless" in requirements
     assert "tflite-runtime" in requirements
     assert "gpiod" in requirements
+    assert "openpyxl==3.1.*" in requirements
+    assert "openpyxl==3.1.*" in desktop_requirements
     assert "rembg" not in requirements
     assert "onnxruntime" not in requirements
 

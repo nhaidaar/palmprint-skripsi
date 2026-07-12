@@ -35,20 +35,32 @@ def test_log_panel_uses_filter_count_and_export_endpoints():
 
     assert "/api/logs" in source
     assert "/api/logs/count" in source
-    assert "/api/logs/export.csv" in source
+    assert "/api/logs/export.xlsx" in source
+    assert "/api/logs/export.csv" not in source
+    assert "Export Excel" in source
+    assert "filtersActive" in source
+    assert "Access log filters" in source
+    assert "Search name, NIM, or description" in source
     assert "type=\"date\"" in source
     assert "nextLogFilters" in source
     assert "latestRequestRef" in source
     assert "setTimeout" in source
 
 
-def test_frontend_config_uses_builtin_vite_proxy_and_exact_nitro():
+def test_frontend_config_installs_api_proxy_before_nitro():
     vite_config = (FRONTEND / "vite.config.ts").read_text()
     package_json = (FRONTEND / "package.json").read_text()
 
-    assert "proxy:" in vite_config
-    assert "palmgateApiProxy" not in vite_config
+    assert "configureServer" in vite_config
+    assert "enforce: 'pre'" in vite_config
+    assert vite_config.index("palmgateApiProxy(),") < vite_config.index("tanstackStart({")
     assert '"nitro": "3.0.260311-beta"' in package_json
+
+
+def test_mediapipe_public_module_uses_absolute_runtime_url():
+    source = (FRONTEND / "app" / "lib" / "mediapipe.ts").read_text()
+
+    assert "new URL(VISION_BUNDLE_URL, window.location.href).href" in source
 
 
 def test_register_panel_handles_usb_polling_cancel_and_disabled_states():
@@ -70,14 +82,26 @@ def test_scan_panel_uses_backend_version_and_closes_hand_landmarker():
 
 
 def test_user_list_uses_edit_and_delete_endpoints_with_typed_nim_guard():
-    source = (FRONTEND / "app" / "components" / "UserList.tsx").read_text()
+    source = (FRONTEND / "app" / "components" / "UserList.tsx").read_text(encoding="utf-8")
 
     assert "method: 'PATCH'" in source
     assert "method: 'DELETE'" in source
     assert "canDeleteUser(deleteText, deleteUser.nim)" in source
+    assert "const deleteBusyRef = useRef(false)" in source
+    assert "deleteBusyRef.current = true" in source
+    assert "deleteBusyRef.current = false" in source
+    assert "setDeleting(true)" in source
+    assert "setDeleting(false)" in source
+    assert "Deleting…" in source
+    assert "aria-busy={deleting}" in source
+    assert "disabled={deleting}" in source
     assert "Historical logs stay" in source
     assert "Failed to update user" in source
     assert "Failed to delete user" in source
+
+    delete_handler = source[source.index("const removeUser"):]
+    delete_catch = delete_handler[delete_handler.index("} catch (err) {"):delete_handler.index("} finally {")]
+    assert delete_catch.index("await loadUsers()") < delete_catch.index("setError(")
 
 
 def test_scan_panel_keeps_browser_and_usb_scan_endpoints():
