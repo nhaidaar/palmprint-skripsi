@@ -100,8 +100,8 @@ def test_usb_compose_uses_separate_preview_and_processing_intervals():
 def test_compose_mounts_selected_model_version_from_project_models():
     compose = Path("docker-compose.yml").read_text()
 
-    assert "${PALMGATE_MODELS_DIR:-./models}/${MODEL_VERSION:-embedding_new_roi_v2}:/app/models/${MODEL_VERSION:-embedding_new_roi_v2}:ro" in compose
-    assert "MODEL_VERSION=${MODEL_VERSION:-embedding_new_roi_v2}" in compose
+    assert "${PALMGATE_MODELS_DIR:-./models}/${MODEL_VERSION:-final}:/app/models/${MODEL_VERSION:-final}:ro" in compose
+    assert "MODEL_VERSION=${MODEL_VERSION:-final}" in compose
     assert "./models/embedding:/app/models/embedding:ro" not in compose
     assert "./palm_embedding.tflite:/app/palm_embedding.tflite" not in compose
     assert "palm_recognition.tflite:/app/palm_recognition.tflite" not in compose

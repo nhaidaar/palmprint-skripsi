@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 from pathlib import Path
 
@@ -72,11 +73,11 @@ def test_embedding_model_defaults(monkeypatch):
     import app.config as config
     importlib.reload(config)
 
-    assert config.MODEL_VERSION == "embedding_new_roi_v2"
-    assert config.MODEL_PATH == config.BASE_DIR / "models" / "embedding_new_roi_v2" / "model.tflite"
-    assert config.MODEL_METADATA_PATH == config.BASE_DIR / "models" / "embedding_new_roi_v2" / "model_metadata.json"
+    assert config.MODEL_VERSION == "final"
+    assert config.MODEL_PATH == config.BASE_DIR / "models" / "final" / "model.tflite"
+    assert config.MODEL_METADATA_PATH == config.BASE_DIR / "models" / "final" / "model_metadata.json"
     assert config.EMBEDDING_DIM == 128
-    assert config.SIMILARITY_THRESHOLD == 0.745932400226593
+    assert config.SIMILARITY_THRESHOLD == 0.7736719250679016
     assert config.TTA_ROTATIONS == (0.0, -6.0, 6.0)
     assert config.ENROLLMENT_TTA_ENABLED is True
     assert config.RECOGNITION_TTA_ENABLED is False
@@ -123,8 +124,18 @@ def test_env_example_documents_default_model_version(tmp_path, monkeypatch):
     project_root = Path(__file__).resolve().parent.parent
     env_example = (project_root / ".env.example").read_text()
 
-    assert "MODEL_VERSION=embedding_new_roi_v2" in env_example
+    assert "MODEL_VERSION=final" in env_example
     assert "MODEL_PATH=" in env_example
+
+
+def test_final_model_metadata_matches_notebook_pipeline():
+    project_root = Path(__file__).resolve().parent.parent
+    metadata = json.loads((project_root / "models" / "final" / "model_metadata.json").read_text())
+
+    assert metadata["embedding_dim"] == 128
+    assert metadata["operating_threshold"] == 0.7736719250679016
+    assert metadata["tta_rotations"] == [0.0, -6.0, 6.0]
+    assert "GaussianBlur(5x5)" in metadata["preprocessing"]
 
 
 def test_model_version_env_uses_versioned_model_folder(monkeypatch):

@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 import pytest
 import app.palm_processor as palm_processor_module
@@ -26,11 +27,23 @@ def test_apply_clahe(processor):
     assert enhanced.dtype == np.uint8
 
 
-def test_preprocess_roi(processor):
-    roi = np.random.randint(0, 256, (150, 150, 3), dtype=np.uint8)
+def test_preprocess_roi_applies_gaussian_blur_before_clahe(processor):
+    roi = np.zeros((32, 32, 3), dtype=np.uint8)
+    roi[::2, ::2] = 255
+    roi[1::2, 1::2] = 255
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(blurred)
+    expected = cv2.resize(
+        cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB),
+        (224, 224),
+        interpolation=cv2.INTER_CUBIC,
+    ).astype(np.float32)
+
     processed = processor.preprocess_roi(roi)
-    assert processed.shape == (224, 224, 3)
-    assert processed.dtype == np.float32
+
+    np.testing.assert_array_equal(processed, expected)
 
 
 def test_palm_processor_uses_notebook_rembg_config(monkeypatch):
