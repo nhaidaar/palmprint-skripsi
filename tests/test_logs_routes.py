@@ -1,4 +1,9 @@
+import re
+from datetime import datetime
+from io import BytesIO
+
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 
 from app.main import app
 
@@ -88,24 +93,61 @@ def test_logs_reject_invalid_date_filters(monkeypatch):
     assert "start_date must use YYYY-MM-DD" in response.json()["detail"]
 
 
-def test_logs_export_csv(monkeypatch):
+def test_logs_export_excel(monkeypatch):
     import app.main as main
 
     fake_db = FakeLogsDB()
     monkeypatch.setattr(main, "db", fake_db)
     client = TestClient(app)
 
-    response = client.get("/api/logs/export.csv?q=alice&status=ALLOWED")
+    response = client.get("/api/logs/export.xlsx?q=alice&status=ALLOWED")
 
     assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/csv")
-    assert "attachment; filename=access_logs.csv" in response.headers["content-disposition"]
-    assert "id,timestamp,status,matched_name,current_nim,similarity,duration_ms,description" in response.text
-    assert "1,2026-07-05 10:00:00,ALLOWED,Alice,A001,0.95,12,front door" in response.text
-    assert fake_db.list_calls[0]["limit"] is None
+    assert response.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert re.fullmatch(
+        r"attachment; filename=\d{8}-\d{6}-\d{6}-palmgate\.xlsx",
+        response.headers["content-disposition"],
+    )
+    assert fake_db.list_calls[0] == {
+        "limit": None,
+        "offset": 0,
+        "q": "alice",
+        "status": "ALLOWED",
+        "start_date": None,
+        "end_date": None,
+    }
+
+    sheet = load_workbook(BytesIO(response.content))["Access Logs"]
+    assert sheet["A1"].value == "PalmGate Access Logs"
+    assert sheet["A2"].value == "Search: alice | Status: ALLOWED | From: All | To: All"
+    assert [sheet.cell(4, column).value for column in range(1, 8)] == [
+        "Time",
+        "Name",
+        "NIM",
+        "Status",
+        "Match %",
+        "Duration",
+        "Description",
+    ]
+    assert sheet.freeze_panes == "A5"
+    assert sheet.auto_filter.ref == "A4:G5"
+    assert sheet["A5"].value == datetime(2026, 7, 5, 10, 0, 0)
+    assert sheet["B5"].value == "Alice"
+    assert sheet["C5"].value == "A001"
+    assert sheet["D5"].value == "ALLOWED"
+    assert sheet["E5"].value == 0.95
+    assert sheet["E5"].number_format == "0%"
+    assert sheet["F5"].value == 12
+    assert sheet["F5"].number_format == '0 "ms"'
+    assert sheet["G5"].value == "front door"
+    assert sheet["A4"].fill.fgColor.rgb[-6:] == "595BD4"
+    assert sheet["D5"].fill.fgColor.rgb[-6:] == "E7F6EC"
+    assert sheet.column_dimensions["G"].width == 36
 
 
-def test_logs_export_csv_neutralizes_spreadsheet_formulas(monkeypatch):
+def test_logs_export_excel_neutralizes_spreadsheet_formulas(monkeypatch):
     import app.main as main
 
     fake_db = FakeLogsDB()
@@ -113,8 +155,28 @@ def test_logs_export_csv_neutralizes_spreadsheet_formulas(monkeypatch):
     monkeypatch.setattr(main, "db", fake_db)
     client = TestClient(app)
 
-    response = client.get("/api/logs/export.csv")
+    response = client.get("/api/logs/export.xlsx")
 
     assert response.status_code == 200
-    assert "'=cmd" in response.text
-    assert "'+SUM(1,1)" in response.text
+    sheet = load_workbook(BytesIO(response.content))["Access Logs"]
+    assert sheet["B5"].value == "'=cmd"
+    assert sheet["G5"].value == "'+SUM(1,1)"
+    assert sheet["B5"].data_type == "s"
+    assert sheet["G5"].data_type == "s"
+
+
+def test_logs_export_excel_handles_empty_results(monkeypatch):
+    import app.main as main
+
+    fake_db = FakeLogsDB()
+    fake_db.rows = []
+    monkeypatch.setattr(main, "db", fake_db)
+    client = TestClient(app)
+
+    response = client.get("/api/logs/export.xlsx")
+
+    assert response.status_code == 200
+    sheet = load_workbook(BytesIO(response.content))["Access Logs"]
+    assert sheet["A5"].value == "No matching logs"
+    assert "A5:G5" in {str(cell_range) for cell_range in sheet.merged_cells.ranges}
+    assert sheet.auto_filter.ref == "A4:G4"

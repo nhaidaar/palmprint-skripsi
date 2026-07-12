@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { User, apiJson } from '../lib/api'
 import { canDeleteUser } from '../lib/userDelete'
@@ -15,6 +15,8 @@ export function UserList({ active, onUsersChanged }: UserListProps) {
   const [editName, setEditName] = useState('')
   const [deleteUser, setDeleteUser] = useState<User | null>(null)
   const [deleteText, setDeleteText] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const deleteBusyRef = useRef(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -58,7 +60,9 @@ export function UserList({ active, onUsersChanged }: UserListProps) {
   }
 
   const removeUser = async () => {
-    if (!deleteUser || !canDeleteUser(deleteText, deleteUser.nim)) return
+    if (deleteBusyRef.current || !deleteUser || !canDeleteUser(deleteText, deleteUser.nim)) return
+    deleteBusyRef.current = true
+    setDeleting(true)
     try {
       await apiJson<{ success: boolean }>(`/api/users/${deleteUser.id}`, { method: 'DELETE' })
       setDeleteUser(null)
@@ -66,8 +70,11 @@ export function UserList({ active, onUsersChanged }: UserListProps) {
       await loadUsers()
       onUsersChanged?.()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete user')
       await loadUsers()
+      setError(err instanceof Error ? err.message : 'Failed to delete user')
+    } finally {
+      deleteBusyRef.current = false
+      setDeleting(false)
     }
   }
 
@@ -94,7 +101,14 @@ export function UserList({ active, onUsersChanged }: UserListProps) {
                   <td>
                     <div className="user-table-actions">
                       <button className="user-action-btn" type="button" onClick={() => startEdit(user)}>Edit</button>
-                      <button className="user-action-btn danger" type="button" onClick={() => { setDeleteUser(user); setDeleteText('') }}>Delete</button>
+                      <button
+                        className="user-action-btn danger"
+                        type="button"
+                        disabled={deleting}
+                        onClick={() => { setDeleteUser(user); setDeleteText('') }}
+                      >
+                        Delete
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -116,13 +130,29 @@ export function UserList({ active, onUsersChanged }: UserListProps) {
         )}
 
         {deleteUser && (
-          <div className="inline-form danger-zone">
+          <div className="inline-form danger-zone" aria-busy={deleting}>
             <h3>Delete {deleteUser.name}?</h3>
             <p>Historical logs stay, but they lose the user link. Type <strong>{deleteUser.nim}</strong> to confirm.</p>
-            <input className="field-input" aria-label="Confirm NIM" value={deleteText} onChange={(event) => setDeleteText(event.target.value)} />
+            <input
+              className="field-input"
+              aria-label="Confirm NIM"
+              value={deleteText}
+              disabled={deleting}
+              onChange={(event) => setDeleteText(event.target.value)}
+            />
             <div className="inline-actions">
-              <button type="button" className="btn btn-danger" disabled={!canDeleteUser(deleteText, deleteUser.nim)} onClick={() => void removeUser()}>Delete user</button>
-              <button type="button" className="btn btn-ghost" onClick={() => setDeleteUser(null)}>Cancel</button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={deleting || !canDeleteUser(deleteText, deleteUser.nim)}
+                onClick={() => void removeUser()}
+              >
+                {deleting && <span className="btn-spinner" aria-hidden="true" />}
+                {deleting ? 'Deleting…' : 'Delete user'}
+              </button>
+              <button type="button" className="btn btn-ghost" disabled={deleting} onClick={() => setDeleteUser(null)}>
+                Cancel
+              </button>
             </div>
           </div>
         )}
