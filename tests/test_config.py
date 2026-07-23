@@ -1,14 +1,50 @@
 import importlib
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(autouse=True)
 def skip_project_dotenv(monkeypatch):
     monkeypatch.setenv("PALMGATE_SKIP_DOTENV", "1")
+
+
+def import_config_with_threshold(raw_value: str):
+    env = os.environ.copy()
+    env["PALMGATE_SKIP_DOTENV"] = "1"
+    env["SIMILARITY_THRESHOLD"] = raw_value
+    return subprocess.run(
+        [sys.executable, "-c", "import app.config; print(app.config.SIMILARITY_THRESHOLD)"],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def import_config_with_duplicate_threshold(raw_value: str | None, similarity: str = "0.75"):
+    env = os.environ.copy()
+    env["PALMGATE_SKIP_DOTENV"] = "1"
+    env["SIMILARITY_THRESHOLD"] = similarity
+    if raw_value is None:
+        env.pop("DUPLICATE_THRESHOLD", None)
+    else:
+        env["DUPLICATE_THRESHOLD"] = raw_value
+    return subprocess.run(
+        [sys.executable, "-c", "import app.config; print(app.config.DUPLICATE_THRESHOLD)"],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def test_device_runtime_env_overrides(monkeypatch):
@@ -35,13 +71,11 @@ def test_usb_preview_interval_defaults_to_realtime(monkeypatch):
     assert config.DEVICE_PREVIEW_FRAME_INTERVAL_MS == 33
 
 
-def test_notebook_rembg_env_override(monkeypatch):
-    monkeypatch.setenv("NOTEBOOK_REMBG_ENABLED", "0")
-
+def test_notebook_runtime_config_is_removed():
     import app.config as config
-    importlib.reload(config)
 
-    assert config.NOTEBOOK_REMBG_ENABLED is False
+    assert not hasattr(config, "NOTEBOOK_REMBG_ENABLED")
+    assert not hasattr(config, "NOTEBOOK_REMBG_MODEL")
 
 
 def test_lock_gpio_env_defaults_and_overrides(monkeypatch):
@@ -61,49 +95,116 @@ def test_lock_gpio_env_defaults_and_overrides(monkeypatch):
     assert config.LOCK_UNLOCK_MS == 2500
 
 
-def test_embedding_model_defaults(monkeypatch):
-    monkeypatch.delenv("MODEL_PATH", raising=False)
-    monkeypatch.delenv("MODEL_VERSION", raising=False)
-    monkeypatch.delenv("MODEL_METADATA_PATH", raising=False)
+def test_embedding_contract_is_fixed(monkeypatch):
     monkeypatch.delenv("SIMILARITY_THRESHOLD", raising=False)
-    monkeypatch.delenv("EMBEDDING_DIM", raising=False)
-    monkeypatch.delenv("ENROLLMENT_TTA_ENABLED", raising=False)
-    monkeypatch.delenv("RECOGNITION_TTA_ENABLED", raising=False)
 
     import app.config as config
     importlib.reload(config)
 
-    assert config.MODEL_VERSION == "final"
-    assert config.MODEL_PATH == config.BASE_DIR / "models" / "final" / "model.tflite"
-    assert config.MODEL_METADATA_PATH == config.BASE_DIR / "models" / "final" / "model_metadata.json"
+    assert config.DEFAULT_SIMILARITY_THRESHOLD == 0.75
+    assert config.SIMILARITY_THRESHOLD == 0.75
     assert config.EMBEDDING_DIM == 128
-    assert config.SIMILARITY_THRESHOLD == 0.7736719250679016
     assert config.TTA_ROTATIONS == (0.0, -6.0, 6.0)
-    assert config.ENROLLMENT_TTA_ENABLED is True
-    assert config.RECOGNITION_TTA_ENABLED is False
+
+    retired_names = (
+        "DEFAULT_MODEL_VERSION",
+        "DEFAULT_MODEL_DIR",
+        "DEFAULT_MODEL_FILENAME",
+        "VERSIONED_MODEL_FILENAME",
+        "DEFAULT_MODEL_METADATA_FILENAME",
+        "DEFAULT_EMBEDDING_DIM",
+        "DEFAULT_TTA_ROTATIONS",
+        "MODEL_VERSION",
+        "MODEL_DIR",
+        "MODEL_PATH",
+        "MODEL_METADATA_PATH",
+        "MODEL_METADATA",
+        "_load_model_metadata",
+    )
+    for name in retired_names:
+        assert not hasattr(config, name)
+
+
+def test_tta_enable_flags_are_removed():
+    import app.config as config
+
+    assert not hasattr(config, "ENROLLMENT_TTA_ENABLED")
+    assert not hasattr(config, "RECOGNITION_TTA_ENABLED")
+
+
+def test_similarity_threshold_env_override():
+    result = import_config_with_threshold("0.82")
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "0.82"
+
+
+@pytest.mark.parametrize(("raw_value", "expected"), (("0", "0.0"), ("1", "1.0")))
+def test_similarity_threshold_accepts_inclusive_boundaries(raw_value, expected):
+    result = import_config_with_threshold(raw_value)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == expected
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    ("not-a-number", "-0.01", "1.01", "nan", "inf", "-inf"),
+)
+def test_invalid_similarity_threshold_raises_value_error(raw_value):
+    result = import_config_with_threshold(raw_value)
+
+    assert result.returncode != 0
+    assert "SIMILARITY_THRESHOLD" in result.stderr
+
+
+def test_duplicate_threshold_defaults_to_similarity_threshold():
+    result = import_config_with_duplicate_threshold(None, similarity="0.82")
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "0.82"
+
+
+@pytest.mark.parametrize(("raw_value", "expected"), (("0", "0.0"), ("1", "1.0")))
+def test_duplicate_threshold_accepts_inclusive_boundaries(raw_value, expected):
+    result = import_config_with_duplicate_threshold(raw_value)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == expected
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    ("not-a-number", "-0.01", "1.01", "nan", "inf", "-inf"),
+)
+def test_invalid_duplicate_threshold_raises_value_error(raw_value):
+    result = import_config_with_duplicate_threshold(raw_value)
+
+    assert result.returncode != 0
+    assert "DUPLICATE_THRESHOLD" in result.stderr
 
 
 def test_dotenv_loader_sets_missing_env_without_overriding(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "MODEL_VERSION=from_env_file\n"
-        "MODEL_PATH=/tmp/from-env.tflite\n"
+        "APP_HOST=from_env_file\n"
+        "DB_PATH=/tmp/from-env.db\n"
         "IGNORED_LINE\n",
         encoding="utf-8",
     )
-    monkeypatch.delenv("MODEL_VERSION", raising=False)
-    monkeypatch.setenv("MODEL_PATH", "/already-set.tflite")
+    monkeypatch.delenv("APP_HOST", raising=False)
+    monkeypatch.setenv("DB_PATH", "/already-set.db")
 
     import app.config as config
     config._load_env_file(env_file)
 
-    assert os.environ["MODEL_VERSION"] == "from_env_file"
-    assert os.environ["MODEL_PATH"] == "/already-set.tflite"
+    assert os.environ["APP_HOST"] == "from_env_file"
+    assert os.environ["DB_PATH"] == "/already-set.db"
 
 
 def test_dotenv_loader_ignores_read_errors(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
-    env_file.write_text("MODEL_VERSION=from_file\n", encoding="utf-8")
+    env_file.write_text("APP_HOST=from_file\n", encoding="utf-8")
 
     import app.config as config
 
@@ -119,64 +220,13 @@ def test_dotenv_loader_ignores_read_errors(tmp_path, monkeypatch):
     config._load_env_file(env_file)
 
 
-def test_env_example_documents_default_model_version(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    project_root = Path(__file__).resolve().parent.parent
-    env_example = (project_root / ".env.example").read_text()
-
-    assert "MODEL_VERSION=final" in env_example
-    assert "MODEL_PATH=" in env_example
-
-
-def test_final_model_metadata_matches_notebook_pipeline():
-    project_root = Path(__file__).resolve().parent.parent
-    metadata = json.loads((project_root / "models" / "final" / "model_metadata.json").read_text())
+def test_historical_final_model_metadata_matches_export_contract():
+    metadata_path = PROJECT_ROOT / "models" / "final" / "model_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
 
     assert metadata["embedding_dim"] == 128
-    assert metadata["operating_threshold"] == 0.7736719250679016
     assert metadata["tta_rotations"] == [0.0, -6.0, 6.0]
-    assert "GaussianBlur(5x5)" in metadata["preprocessing"]
-
-
-def test_model_version_env_uses_versioned_model_folder(monkeypatch):
-    monkeypatch.delenv("MODEL_PATH", raising=False)
-    monkeypatch.delenv("MODEL_METADATA_PATH", raising=False)
-    monkeypatch.setenv("MODEL_VERSION", "embedding")
-
-    import app.config as config
-    importlib.reload(config)
-
-    assert config.MODEL_PATH == config.BASE_DIR / "models" / "embedding" / "model.tflite"
-    assert config.MODEL_METADATA_PATH == config.BASE_DIR / "models" / "embedding" / "model_metadata.json"
-
-
-def test_model_path_env_overrides_model_version(tmp_path, monkeypatch):
-    explicit_model = tmp_path / "custom.tflite"
-    monkeypatch.setenv("MODEL_PATH", str(explicit_model))
-    monkeypatch.setenv("MODEL_VERSION", "embedding")
-
-    import app.config as config
-    importlib.reload(config)
-
-    assert config.MODEL_PATH == explicit_model
-
-
-def test_model_metadata_overrides_threshold_and_dim(tmp_path, monkeypatch):
-    metadata = tmp_path / "model_metadata.json"
-    metadata.write_text(
-        '{"embedding_dim": 64, "operating_threshold": 0.8123, "tta_rotations": [0, -3, 3]}',
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("MODEL_METADATA_PATH", str(metadata))
-    monkeypatch.delenv("SIMILARITY_THRESHOLD", raising=False)
-    monkeypatch.delenv("EMBEDDING_DIM", raising=False)
-
-    import app.config as config
-    importlib.reload(config)
-
-    assert config.EMBEDDING_DIM == 64
-    assert config.SIMILARITY_THRESHOLD == 0.8123
-    assert config.TTA_ROTATIONS == (0.0, -3.0, 3.0)
+    assert metadata["operating_threshold"] == pytest.approx(0.7736719250679016)
 
 
 def test_app_env_defaults_to_production(monkeypatch):

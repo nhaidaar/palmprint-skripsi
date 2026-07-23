@@ -1,6 +1,11 @@
 import numpy as np
 
-from app.services.embedding_templates import build_hand_templates, l2_normalize, mean_template, overall_template
+from app.services.embedding_templates import (
+    build_embedding_template,
+    build_hand_templates,
+    build_overall_template,
+    l2_normalize,
+)
 
 
 def test_l2_normalize_returns_unit_vector():
@@ -9,8 +14,8 @@ def test_l2_normalize_returns_unit_vector():
     np.testing.assert_allclose(result, np.array([0.6, 0.8], dtype=np.float32), rtol=1e-6)
 
 
-def test_mean_template_normalizes_average():
-    result = mean_template([
+def test_build_embedding_template_normalizes_average():
+    result = build_embedding_template([
         np.array([1.0, 0.0], dtype=np.float32),
         np.array([0.0, 1.0], dtype=np.float32),
     ])
@@ -42,8 +47,8 @@ def test_build_hand_templates_rejects_missing_hand():
         raise AssertionError("Expected missing right hand samples to fail")
 
 
-def test_overall_template_averages_hand_templates():
-    result = overall_template({
+def test_build_overall_template_averages_hand_templates():
+    result = build_overall_template({
         "left": np.array([1.0, 0.0], dtype=np.float32),
         "right": np.array([0.0, 1.0], dtype=np.float32),
     })

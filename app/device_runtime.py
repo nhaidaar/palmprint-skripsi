@@ -17,15 +17,13 @@ from app.config import (
     DEVICE_HOLD_MS,
     DEVICE_STATUS_HEARTBEAT_MS,
     DUPLICATE_THRESHOLD,
-    ENROLLMENT_TTA_ENABLED,
-    RECOGNITION_TTA_ENABLED,
     REGISTRATION_CAPTURES_PER_HAND,
     REGISTRATION_HANDS,
     REGISTRATION_MIN_VALID_PER_HAND,
     SIMILARITY_THRESHOLD,
 )
 from app.lock_controller import NoopLockController, build_lock_controller
-from app.services.embedding_templates import build_hand_templates, overall_template
+from app.services.embedding_templates import build_hand_templates, build_overall_template
 from app.services.recognition_service import match_embedding_and_log
 from app.services.registration_quality import SAMPLE_TARGETS, evaluate_guidance
 from app.services.scan_quality import scan_quality_failures
@@ -253,10 +251,7 @@ class DeviceRuntime:
             hand = self._hand_for_sample_index(sample_index, self.registration_session.hands)
             cv2.imwrite(os.path.join(save_dir, f"{hand}_{sample_index}.jpg"), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
-            embedding = self.palm_processor.get_embedding_from_notebook_frame(
-                frame,
-                tta_enabled=ENROLLMENT_TTA_ENABLED,
-            )
+            embedding, _ = self.palm_processor.extract_embedding_from_frame(frame)
             if embedding is None:
                 raise RuntimeError("Palm preprocessing failed")
             sample = {
@@ -293,28 +288,34 @@ class DeviceRuntime:
 
             template_hands = list(templates.keys())
             template_embeddings = [templates[hand].astype(np.float32) for hand in template_hands]
-            raw_embeddings = []
-            raw_embedding_hands = []
+            individual_embeddings = []
+            individual_embedding_hands = []
             for hand in self.registration_session.hands:
                 for sample in samples:
                     if sample["hand"] == hand:
-                        raw_embeddings.append(sample["embedding"].astype(np.float32))
-                        raw_embedding_hands.append(hand)
-            avg_embedding = overall_template(templates)
+                        individual_embeddings.append(sample["embedding"].astype(np.float32))
+                        individual_embedding_hands.append(hand)
+            avg_embedding = build_overall_template(templates)
 
-            stored = self.db.get_all_embeddings()
-            for embedding in template_embeddings:
-                duplicate = self.palm_processor.compute_similarity(embedding, stored, DUPLICATE_THRESHOLD)
-                if duplicate["status"] == "ALLOWED":
-                    raise RuntimeError(f"This palm is already registered as '{duplicate['name']}'")
+            stored_embeddings = self.db.get_all_embeddings()
+            for hand_template in template_embeddings:
+                duplicate_result = self.palm_processor.compute_similarity(
+                    hand_template,
+                    stored_embeddings,
+                    DUPLICATE_THRESHOLD,
+                )
+                if duplicate_result["status"] == "ALLOWED":
+                    raise RuntimeError(
+                        f"This palm is already registered as '{duplicate_result['name']}'"
+                    )
 
             try:
                 user_id = self.db.add_user(
                     self.registration_session.name,
                     avg_embedding,
                     nim=self.registration_session.nim,
-                    individual_embeddings=raw_embeddings,
-                    embedding_hands=raw_embedding_hands,
+                    individual_embeddings=individual_embeddings,
+                    embedding_hands=individual_embedding_hands,
                 )
             except ValueError as exc:
                 raise RuntimeError(str(exc)) from exc
@@ -327,8 +328,11 @@ class DeviceRuntime:
                 "user_id": user_id,
                 "nim": nim,
                 "name": name,
-                "stored_embeddings": len(raw_embeddings),
-                "hands": {hand: raw_embedding_hands.count(hand) for hand in REGISTRATION_HANDS},
+                "stored_embeddings": len(individual_embeddings),
+                "hands": {
+                    hand: individual_embedding_hands.count(hand)
+                    for hand in REGISTRATION_HANDS
+                },
             }
 
     def tick(self):
@@ -414,10 +418,7 @@ class DeviceRuntime:
             return None
 
         self.scan_state = {"stage": "recognizing", "metrics": metrics}
-        embedding = self.palm_processor.get_embedding_from_notebook_frame(
-            frame,
-            tta_enabled=RECOGNITION_TTA_ENABLED,
-        )
+        embedding, _ = self.palm_processor.extract_embedding_from_frame(frame)
         if embedding is None:
             self.hand_seen_since_ms = None
             self.scan_state = {"stage": "preprocessing_failed", "metrics": metrics}

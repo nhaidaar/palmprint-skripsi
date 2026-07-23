@@ -4,8 +4,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from app.config import DUPLICATE_THRESHOLD, ENROLLMENT_TTA_ENABLED, REGISTRATION_MIN_VALID_PER_HAND
-from app.services.embedding_templates import build_hand_templates, l2_normalize, overall_template
+from app.config import DUPLICATE_THRESHOLD, REGISTRATION_MIN_VALID_PER_HAND
+from app.services.embedding_templates import (
+    build_hand_templates,
+    build_overall_template,
+    l2_normalize,
+)
 
 SEED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
@@ -47,7 +51,7 @@ def parse_system_register_folder(label: str) -> tuple[str, str]:
 
 
 def build_seed_embedding(frame_rgb: np.ndarray, palm_processor) -> SeedEmbeddingResult:
-    embedding = palm_processor.get_embedding(frame_rgb, tta_enabled=True)
+    embedding, _ = palm_processor.extract_embedding_from_frame(frame_rgb)
     if embedding is None:
         raise RuntimeError("MediaPipe hand detection failed")
     embedding = embedding.astype(np.float32)
@@ -65,7 +69,7 @@ def build_seed_embedding_from_frames(
 ) -> SeedEmbeddingResult:
     embeddings = []
     for frame_rgb in frames_rgb:
-        embedding = palm_processor.get_embedding(frame_rgb, tta_enabled=True)
+        embedding, _ = palm_processor.extract_embedding_from_frame(frame_rgb)
         if embedding is not None:
             embeddings.append(embedding.astype(np.float32))
     if not embeddings:
@@ -86,7 +90,7 @@ def build_system_register_template(
 ) -> SeedEmbeddingResult:
     samples = []
     for frame_rgb in frames_rgb:
-        embedding = palm_processor.get_embedding(frame_rgb, tta_enabled=ENROLLMENT_TTA_ENABLED)
+        embedding, _ = palm_processor.extract_embedding_from_frame(frame_rgb)
         if embedding is not None:
             samples.append({"hand": hand, "embedding": embedding.astype(np.float32)})
 
@@ -95,7 +99,7 @@ def build_system_register_template(
         required_hands=(hand,),
         min_per_hand=REGISTRATION_MIN_VALID_PER_HAND,
     )
-    embedding = overall_template(templates)
+    embedding = build_overall_template(templates)
     return SeedEmbeddingResult(
         embedding=embedding,
         individual_embeddings=[sample["embedding"].astype(np.float32) for sample in samples],
@@ -157,9 +161,13 @@ def _replace_users(db):
 
 
 def _reject_duplicate_templates(db, palm_processor, templates: list[np.ndarray]):
-    stored = db.get_all_embeddings()
+    stored_embeddings = db.get_all_embeddings()
     for embedding in templates:
-        duplicate = palm_processor.compute_similarity(embedding, stored, DUPLICATE_THRESHOLD)
+        duplicate = palm_processor.compute_similarity(
+            embedding,
+            stored_embeddings,
+            DUPLICATE_THRESHOLD,
+        )
         if duplicate["status"] == "ALLOWED":
             raise RuntimeError(f"This palm is already registered as '{duplicate['name']}'")
 

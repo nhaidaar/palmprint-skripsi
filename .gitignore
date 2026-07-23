@@ -72,5 +72,7 @@ data/
 docs/
 designs/
 Dataset*/
+models/
 seeds/
+CLAUDE.md
 test_script.py

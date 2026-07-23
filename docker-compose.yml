@@ -9,8 +9,8 @@ x-palmgate-common: &palmgate-common
     - "8000"
 
   volumes:
-    # ML model files live under the project models/ directory.
-    - ${PALMGATE_MODELS_DIR:-./models}/${MODEL_VERSION:-final}:/app/models/${MODEL_VERSION:-final}:ro
+    # Fixed runtime model and MediaPipe hand detector.
+    - ./model.tflite:/app/model.tflite:ro
     - ./hand_landmarker.task:/app/hand_landmarker.task:ro
     # Persistent storage for the SQLite database.
     - palmgate-db:/data
@@ -50,7 +50,6 @@ services:
     environment:
       # Database is stored in the named volume below so it survives rebuilds.
       - DB_PATH=/data/palmprint.db
-      - MODEL_VERSION=${MODEL_VERSION:-final}
       # Browser mode: use a phone/laptop camera through the web UI.
       - DEVICE_RUNTIME_ENABLED=0
       - CAMERA_SOURCE=browser
@@ -78,7 +77,6 @@ services:
     environment:
       # Database is stored in the named volume below so it survives rebuilds.
       - DB_PATH=/data/palmprint.db
-      - MODEL_VERSION=${MODEL_VERSION:-final}
       # USB mode: use the Orange Pi USB camera for registration and recognition.
       - DEVICE_RUNTIME_ENABLED=1
       - CAMERA_SOURCE=usb

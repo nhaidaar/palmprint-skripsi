@@ -53,7 +53,6 @@ def test_env_example_selects_usb_compose_profile_by_default():
     assert "DEVICE_RUNTIME_ENABLED=1" in env_example
     assert "CAMERA_SOURCE=usb" in env_example
     assert "CAMERA_DEVICE_PATH=/dev/video0" in env_example
-    assert "PALMGATE_MODELS_DIR=./models" in env_example
     assert "LOCK_GPIO_ENABLED=0" in env_example
     assert "LOCK_GPIO_LINE=75" in env_example
     assert "LOCK_ACTIVE_LOW=1" in env_example
@@ -97,14 +96,81 @@ def test_usb_compose_uses_separate_preview_and_processing_intervals():
     assert "DEVICE_FRAME_INTERVAL_MS=1000" not in compose
 
 
-def test_compose_mounts_selected_model_version_from_project_models():
+def test_compose_mounts_repository_root_model():
     compose = Path("docker-compose.yml").read_text()
+    common = compose[compose.index("x-palmgate-common:") : compose.index("x-cloudflared-common:")]
+    volumes = common[common.index("  volumes:") : common.index("  # Optional")]
+    active_mounts = [
+        line.strip()
+        for line in volumes.splitlines()
+        if line.strip().startswith("- ")
+    ]
 
-    assert "${PALMGATE_MODELS_DIR:-./models}/${MODEL_VERSION:-final}:/app/models/${MODEL_VERSION:-final}:ro" in compose
-    assert "MODEL_VERSION=${MODEL_VERSION:-final}" in compose
-    assert "./models/embedding:/app/models/embedding:ro" not in compose
-    assert "./palm_embedding.tflite:/app/palm_embedding.tflite" not in compose
-    assert "palm_recognition.tflite:/app/palm_recognition.tflite" not in compose
+    assert "  palmgate-api-browser:\n    <<: *palmgate-common" in compose
+    assert "  palmgate-api-usb:\n    <<: *palmgate-common" in compose
+    assert "- ./model.tflite:/app/model.tflite:ro" in active_mounts
+    assert "- ./hand_landmarker.task:/app/hand_landmarker.task:ro" in active_mounts
+    assert "- palmgate-db:/data" in active_mounts
+    assert "- ./data/captures:/data/captures" in active_mounts
+    assert [mount for mount in active_mounts if "model" in mount.lower()] == [
+        "- ./model.tflite:/app/model.tflite:ro"
+    ]
+    assert "${PALMGATE_MODELS_DIR" not in compose
+    assert "${MODEL_VERSION" not in compose
+
+
+def test_compose_and_env_example_omit_retired_model_settings():
+    compose = Path("docker-compose.yml").read_text()
+    env_example = Path(".env.example").read_text()
+    combined = compose + "\n" + env_example
+
+    retired_names = (
+        "MODEL_VERSION",
+        "MODEL_PATH",
+        "MODEL_METADATA_PATH",
+        "PALMGATE_MODELS_DIR",
+        "ENROLLMENT_TTA_ENABLED",
+        "RECOGNITION_TTA_ENABLED",
+        "NOTEBOOK_REMBG_ENABLED",
+        "NOTEBOOK_REMBG_MODEL",
+    )
+    for name in retired_names:
+        assert name not in combined
+
+
+def test_env_example_documents_similarity_threshold_default():
+    env_example = Path(".env.example").read_text()
+    active_assignments = {
+        line.strip()
+        for line in env_example.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert "SIMILARITY_THRESHOLD=0.75" in active_assignments
+
+
+def test_runtime_documentation_matches_fixed_model_contract():
+    readme = Path("README.md").read_text(encoding="utf-8")
+    claude = Path("CLAUDE.md").read_text(encoding="utf-8")
+    combined = readme + "\n" + claude
+
+    assert "`model.tflite` in the project root" in readme
+    assert "`hand_landmarker.task` in the project root" in readme
+    assert "`0°`, `-6°`, and `+6°`" in readme
+    assert "128-dimensional" in combined
+    assert "defaults to `0.75`" in combined
+    assert "docker compose down -v" in readme
+    assert "deploy/orangepi/" not in combined
+
+    retired_claims = (
+        "models/<version>/model.tflite",
+        "models/final/model.tflite",
+        "MODEL_METADATA_PATH",
+        "NOTEBOOK_REMBG_ENABLED",
+        "tests/test_notebook_preprocessing.py",
+    )
+    for claim in retired_claims:
+        assert claim not in combined
 
 
 def test_dockerfile_stamps_palmgate_version():
