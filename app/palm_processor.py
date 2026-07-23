@@ -1,5 +1,8 @@
-import cv2
 import logging
+import threading
+from pathlib import Path
+
+import cv2
 import numpy as np
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
@@ -8,17 +11,15 @@ from mediapipe.tasks.python import vision as mp_vision
 from app.config import (
     CLAHE_CLIP_LIMIT,
     CLAHE_TILE_GRID,
-    DEFAULT_EMBEDDING_DIM,
     EMBEDDING_DIM,
     HAND_LANDMARKER_PATH,
     IMG_SIZE,
     MIN_PALM_WIDTH,
-    MODEL_PATH,
-    NOTEBOOK_REMBG_ENABLED,
     PALM_ROI_SCALE,
     TTA_ROTATIONS,
 )
-from app.notebook_preprocessing import NotebookPreprocessor
+
+MODEL_PATH = Path(__file__).resolve().parent.parent / "model.tflite"
 
 log = logging.getLogger("palmgate")
 log.setLevel(logging.INFO)
@@ -39,22 +40,19 @@ PINKY_MCP = 17
 
 
 class PalmProcessor:
-    def __init__(self, model_path=MODEL_PATH, hand_model_path=HAND_LANDMARKER_PATH):
+    def __init__(self, hand_model_path=HAND_LANDMARKER_PATH):
         self.clahe = cv2.createCLAHE(
             clipLimit=CLAHE_CLIP_LIMIT, tileGridSize=CLAHE_TILE_GRID
         )
         self.interpreter = None
         self._input_index = None
         self._output_index = None
-        self._embedding_dim = EMBEDDING_DIM
         self._hand_landmarker = None
-        self.notebook_preprocessor = NotebookPreprocessor(rembg_enabled=NOTEBOOK_REMBG_ENABLED)
+        self._operation_lock = threading.RLock()
 
         if hand_model_path is not None:
             self._load_hand_model(hand_model_path)
-
-        if model_path is not None:
-            self._load_model(model_path)
+        self._load_model(MODEL_PATH)
 
     def _load_hand_model(self, hand_model_path):
         options = mp_vision.HandLandmarkerOptions(
@@ -67,39 +65,55 @@ class PalmProcessor:
         )
         self._hand_landmarker = mp_vision.HandLandmarker.create_from_options(options)
 
-    def warmup_notebook_preprocessor(self):
-        if self.notebook_preprocessor.rembg_enabled:
-            self.notebook_preprocessor._get_rembg_session()
+    def _load_model(self, model_path: Path):
+        if not model_path.is_file():
+            raise FileNotFoundError(f"Model file not found: {model_path}")
 
-    def _load_model(self, model_path):
-        kwargs = {"model_path": str(model_path)}
         try:
-            from tflite_runtime.interpreter import Interpreter
-            self.interpreter = Interpreter(num_threads=4, **kwargs)
-        except ImportError:
-            import tensorflow as tf
-            self.interpreter = tf.lite.Interpreter(num_threads=4, **kwargs)
-        except TypeError:
             try:
                 from tflite_runtime.interpreter import Interpreter
-                self.interpreter = Interpreter(**kwargs)
             except ImportError:
                 import tensorflow as tf
-                self.interpreter = tf.lite.Interpreter(**kwargs)
 
-        self.interpreter.allocate_tensors()
-        input_details = self.interpreter.get_input_details()
-        output_details = self.interpreter.get_output_details()
+                Interpreter = tf.lite.Interpreter
+
+            try:
+                interpreter = Interpreter(model_path=str(model_path), num_threads=4)
+            except TypeError:
+                interpreter = Interpreter(model_path=str(model_path))
+            interpreter.allocate_tensors()
+            input_details = interpreter.get_input_details()
+            output_details = interpreter.get_output_details()
+        except Exception as exc:
+            raise RuntimeError(f"Unable to load TFLite model: {model_path}") from exc
+
+        input_shape = tuple(int(value) for value in input_details[0]["shape"])
+        if input_shape != (1, 224, 224, 3):
+            raise ValueError(
+                "Embedding model input shape must be (1, 224, 224, 3), "
+                f"got {input_shape}"
+            )
+        if np.dtype(input_details[0]["dtype"]) != np.dtype(np.float32):
+            raise ValueError(
+                "Embedding model input dtype must be float32, "
+                f"got {np.dtype(input_details[0]['dtype']).name}"
+            )
+
+        output_size = int(np.prod(output_details[0]["shape"]))
+        if output_size != EMBEDDING_DIM:
+            raise ValueError(
+                f"Embedding model must output exactly {EMBEDDING_DIM} values, got {output_size}"
+            )
+        if np.dtype(output_details[0]["dtype"]) != np.dtype(np.float32):
+            raise ValueError(
+                "Embedding model output dtype must be float32, "
+                f"got {np.dtype(output_details[0]['dtype']).name}"
+            )
+
+        self.interpreter = interpreter
         self._input_index = input_details[0]["index"]
         self._output_index = output_details[0]["index"]
-
-        shape = output_details[0].get("shape", [])
-        if hasattr(shape, "tolist"):
-            shape = shape.tolist()
-        if len(shape) != 2 or int(shape[-1]) != DEFAULT_EMBEDDING_DIM:
-            raise RuntimeError(f"Embedding model must output [1, {DEFAULT_EMBEDDING_DIM}], got {shape}")
-        self._embedding_dim = int(shape[-1])
-        log.info("MODEL | embedding output index=%d dim=%d", self._output_index, self._embedding_dim)
+        log.info("MODEL | embedding output index=%d dim=%d", self._output_index, EMBEDDING_DIM)
 
     def extract_palm_roi(self, frame_rgb: np.ndarray):
         if self._hand_landmarker is None:
@@ -119,7 +133,8 @@ class PalmProcessor:
             return None
 
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-        result = self._hand_landmarker.detect(mp_image)
+        with self._operation_lock:
+            result = self._hand_landmarker.detect(mp_image)
 
         if not result.hand_landmarks:
             log.warning(
@@ -205,22 +220,66 @@ class PalmProcessor:
         resized = cv2.resize(rgb, IMG_SIZE, interpolation=cv2.INTER_CUBIC)
         return resized.astype(np.float32)
 
-    def get_embedding_with_processed_roi(self, frame_rgb: np.ndarray, tta_enabled: bool = False):
-        roi = self.extract_palm_roi(frame_rgb)
-        if roi is None:
-            return None, None
-        processed = self.preprocess_roi(roi)
-        embedding = self._run_inference_with_optional_tta(processed, tta_enabled=tta_enabled)
-        return embedding, processed
+    def extract_embedding_from_frame(
+        self, frame_rgb: np.ndarray
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        with self._operation_lock:
+            roi = self.extract_palm_roi(frame_rgb)
+            if roi is None:
+                return None, None
 
-    def get_embedding(self, frame_rgb: np.ndarray, tta_enabled: bool = False):
-        embedding, _ = self.get_embedding_with_processed_roi(frame_rgb, tta_enabled=tta_enabled)
-        return embedding
+            model_input = self.preprocess_roi(roi)
+            return self._infer_embedding(model_input), model_input
 
-    def get_embedding_from_notebook_frame(self, frame_rgb: np.ndarray, tta_enabled: bool = False):
-        # Compatibility wrapper: the new embedding model was trained on MediaPipe ROI,
-        # not the old rembg/FFT notebook preprocessing path.
-        return self.get_embedding(frame_rgb, tta_enabled=tta_enabled)
+    def extract_embedding_from_roi(
+        self, roi_rgb: np.ndarray
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        with self._operation_lock:
+            if roi_rgb is None or roi_rgb.size == 0:
+                return None, None
+
+            model_input = self.preprocess_roi(roi_rgb)
+            return self._infer_embedding(model_input), model_input
+
+    def _infer_embedding(self, model_input: np.ndarray) -> np.ndarray:
+        if self.interpreter is None:
+            raise RuntimeError("TFLite model not loaded")
+        if self._input_index is None or self._output_index is None:
+            raise RuntimeError("TFLite tensor indices are not initialized")
+
+        embeddings = []
+        for angle in TTA_ROTATIONS:
+            rotated_input = self._rotate_model_input(model_input, angle)
+            input_data = np.expand_dims(rotated_input.astype(np.float32), axis=0)
+            self.interpreter.set_tensor(self._input_index, input_data)
+            self.interpreter.invoke()
+            output = np.asarray(
+                self.interpreter.get_tensor(self._output_index), dtype=np.float32
+            ).reshape(-1)
+
+            if output.size != EMBEDDING_DIM:
+                raise ValueError(
+                    f"Embedding model must output exactly {EMBEDDING_DIM} values, got {output.size}"
+                )
+            output_norm = float(np.linalg.norm(output))
+            if (
+                not np.all(np.isfinite(output))
+                or not np.isfinite(output_norm)
+                or output_norm <= np.finfo(np.float32).eps
+            ):
+                raise ValueError("Embedding model output must be finite non-zero values")
+
+            embeddings.append(self._normalize_embedding(output))
+
+        mean_embedding = np.mean(embeddings, axis=0)
+        mean_norm = float(np.linalg.norm(mean_embedding))
+        if (
+            not np.all(np.isfinite(mean_embedding))
+            or not np.isfinite(mean_norm)
+            or mean_norm <= np.finfo(np.float32).eps
+        ):
+            raise ValueError("Averaged embedding must be finite non-zero values")
+        return self._normalize_embedding(mean_embedding)
 
     def get_registration_guidance_metrics(self, frame_rgb: np.ndarray, previous_metrics: dict | None = None):
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
@@ -238,7 +297,8 @@ class PalmProcessor:
             return base
 
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-        result = self._hand_landmarker.detect(mp_image)
+        with self._operation_lock:
+            result = self._hand_landmarker.detect(mp_image)
         if not result.hand_landmarks:
             return base
 
@@ -287,35 +347,6 @@ class PalmProcessor:
             )
         return metrics
 
-    def get_embedding_from_roi_with_processed_roi(
-        self,
-        roi_rgb: np.ndarray,
-        rotation_angle: float = 0.0,
-        tta_enabled: bool = False,
-    ):
-        """Process a pre-extracted, already-aligned palm ROI from the browser."""
-        if roi_rgb is None or roi_rgb.size == 0:
-            log.warning("DETECT | received empty ROI from client")
-            return None, None
-
-        log.info("DETECT | using client-side ROI  shape=%s", roi_rgb.shape)
-        processed = self.preprocess_roi(roi_rgb)
-        embedding = self._run_inference_with_optional_tta(processed, tta_enabled=tta_enabled)
-        return embedding, processed
-
-    def get_embedding_from_roi(
-        self,
-        roi_rgb: np.ndarray,
-        rotation_angle: float = 0.0,
-        tta_enabled: bool = False,
-    ):
-        embedding, _ = self.get_embedding_from_roi_with_processed_roi(
-            roi_rgb,
-            rotation_angle,
-            tta_enabled=tta_enabled,
-        )
-        return embedding
-
     def _normalize_embedding(self, embedding: np.ndarray) -> np.ndarray:
         vector = np.asarray(embedding, dtype=np.float32).reshape(-1)
         norm = float(np.linalg.norm(vector))
@@ -323,37 +354,19 @@ class PalmProcessor:
             return vector
         return (vector / norm).astype(np.float32)
 
-    def _rotate_model_input(self, processed: np.ndarray, angle_degrees: float) -> np.ndarray:
+    def _rotate_model_input(self, model_input: np.ndarray, angle_degrees: float) -> np.ndarray:
         if abs(angle_degrees) < 1e-6:
-            return processed
-        h, w = processed.shape[:2]
+            return model_input
+        h, w = model_input.shape[:2]
         matrix = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle_degrees, 1.0)
         return cv2.warpAffine(
-            processed,
+            model_input,
             matrix,
             (w, h),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(0, 0, 0),
         ).astype(np.float32)
-
-    def _run_inference_with_optional_tta(self, processed: np.ndarray, tta_enabled: bool = False) -> np.ndarray:
-        if not tta_enabled:
-            return self._run_inference(processed)
-        embeddings = [self._run_inference(self._rotate_model_input(processed, angle)) for angle in TTA_ROTATIONS]
-        return self._normalize_embedding(np.mean(embeddings, axis=0))
-
-    def _run_inference(self, processed: np.ndarray) -> np.ndarray:
-        if self.interpreter is None:
-            raise RuntimeError("TFLite model not loaded")
-        if self._output_index is None:
-            raise RuntimeError("TFLite model output tensor not configured")
-
-        input_data = np.expand_dims(processed.astype(np.float32), axis=0)
-        self.interpreter.set_tensor(self._input_index, input_data)
-        self.interpreter.invoke()
-        embedding = self.interpreter.get_tensor(self._output_index)[0]
-        return self._normalize_embedding(embedding)
 
     def compute_similarity(self, embedding: np.ndarray, stored_embeddings: list, threshold: float) -> dict:
         if not stored_embeddings:

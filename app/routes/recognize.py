@@ -10,7 +10,7 @@ import numpy as np
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.config import DEV_FEATURES_ENABLED, RECOGNITION_TTA_ENABLED, SIMILARITY_THRESHOLD
+from app.config import DEV_FEATURES_ENABLED, SIMILARITY_THRESHOLD
 from app.services.recognition_service import match_embedding_and_log
 
 log = logging.getLogger("palmgate")
@@ -21,7 +21,7 @@ RECOGNITION_DEBUG_DIR = Path("data") / "debug" / "recognize"
 class RecognizeRequest(BaseModel):
     image: str
     is_roi: bool = False          # True when the browser has pre-cropped the palm ROI
-    rotation_angle: float = 0.0   # Knuckle-line tilt (deg) from index-MCP→pinky-MCP vector
+    rotation_angle: float = 0.0   # Retained for wire compatibility; ignored for aligned client ROIs
     debug_roi: bool = False
     source: str = "scan"
 
@@ -97,16 +97,9 @@ async def recognize(req: RecognizeRequest):
 
     if req.is_roi:
         log.debug("RECOGNIZE | using pre-cropped client ROI — skipping server detection")
-        embedding, processed_roi = palm_processor.get_embedding_from_roi_with_processed_roi(
-            frame,
-            req.rotation_angle,
-            tta_enabled=RECOGNITION_TTA_ENABLED,
-        )
+        embedding, processed_roi = palm_processor.extract_embedding_from_roi(frame)
     else:
-        embedding, processed_roi = palm_processor.get_embedding_with_processed_roi(
-            frame,
-            tta_enabled=RECOGNITION_TTA_ENABLED,
-        )
+        embedding, processed_roi = palm_processor.extract_embedding_from_frame(frame)
     if not should_return_roi:
         processed_roi = None
 
