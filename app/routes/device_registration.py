@@ -1,6 +1,7 @@
 import asyncio
 import json
 import queue
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import StreamingResponse
@@ -28,12 +29,13 @@ class StartRegistrationResponse(BaseModel):
     right_count: int
 
 
-def _runtime():
-    from app.main import device_runtime
+def _runtime(direction: Literal["ENTRY", "EXIT"] = "ENTRY"):
+    from app.main import device_runtime, exit_device_runtime
 
-    if device_runtime is None:
+    runtime = device_runtime if direction == "ENTRY" else exit_device_runtime
+    if runtime is None:
         raise HTTPException(status_code=409, detail="USB device runtime is not enabled")
-    return device_runtime
+    return runtime
 
 
 @router.post("/start", response_model=StartRegistrationResponse)
@@ -73,8 +75,8 @@ async def registration_status():
 
 
 @router.get("/preview.jpg")
-async def preview_frame():
-    frame = _runtime().get_latest_frame_jpeg()
+async def preview_frame(direction: Literal["ENTRY", "EXIT"] = "ENTRY"):
+    frame = _runtime(direction).get_latest_frame_jpeg()
     if frame is None:
         raise HTTPException(status_code=503, detail="USB preview frame is not ready")
     return Response(
@@ -94,9 +96,9 @@ async def mjpeg_frames(runtime):
 
 
 @router.get("/preview.mjpg")
-async def preview_stream():
+async def preview_stream(direction: Literal["ENTRY", "EXIT"] = "ENTRY"):
     return StreamingResponse(
-        mjpeg_frames(_runtime()),
+        mjpeg_frames(_runtime(direction)),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={"Cache-Control": "no-store"},
     )
@@ -147,10 +149,10 @@ async def scan_event_stream(runtime):
 
 
 @router.get("/scan-events")
-async def scan_events():
+async def scan_events(direction: Literal["ENTRY", "EXIT"] = "ENTRY"):
     """SSE endpoint for real-time scan result notifications."""
     return StreamingResponse(
-        scan_event_stream(_runtime()),
+        scan_event_stream(_runtime(direction)),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -5,8 +5,11 @@ def test_docker_requirements_use_active_runtime_dependencies():
     requirements = Path("requirements.docker.txt").read_text()
     desktop_requirements = Path("requirements.txt").read_text()
 
-    assert "mediapipe" in requirements
-    assert "opencv-python-headless" in requirements
+    assert "mediapipe==0.10.18" in requirements
+    assert "mediapipe==0.10.18" in desktop_requirements
+    assert "opencv-contrib-python==4.11.*" in requirements
+    assert "opencv-contrib-python==4.11.*" in desktop_requirements
+    assert "opencv-python-headless" not in requirements + desktop_requirements
     assert "tflite-runtime" in requirements
     assert "gpiod" in requirements
     assert "openpyxl==3.1.*" in requirements
@@ -21,6 +24,7 @@ def test_dockerfile_pins_bookworm_base_for_gpio_runtime_libs():
     assert "FROM python:3.11-slim-bookworm AS builder" in dockerfile
     assert "FROM python:3.11-slim-bookworm\n" in dockerfile
     assert "libgpiod2" in dockerfile
+    assert "libportaudio2" in dockerfile.split("FROM python:3.11-slim-bookworm\n", 1)[1]
 
 
 def test_dockerfile_uses_uv_for_python_dependencies():
@@ -72,8 +76,10 @@ def test_usb_compose_uses_configurable_camera_device_path():
     compose = Path("docker-compose.yml").read_text()
 
     assert "CAMERA_SOURCE=usb" in compose
-    assert "CAMERA_DEVICE_PATH=${CAMERA_DEVICE_PATH:-/dev/video0}" in compose
-    assert "${CAMERA_DEVICE_PATH:-/dev/video0}:${CAMERA_DEVICE_PATH:-/dev/video0}" in compose
+    assert "ENTRY_CAMERA_DEVICE_PATH=/dev/video0" in compose
+    assert "EXIT_CAMERA_DEVICE_PATH=/dev/video2" in compose
+    assert 'source: "${ENTRY_CAMERA_DEVICE_PATH:-/dev/video0}"\n        target: /dev/video0' in compose
+    assert 'source: "${EXIT_CAMERA_DEVICE_PATH:-/dev/video2}"\n        target: /dev/video2' in compose
     assert "usb-046d_C270_HD_WEBCAM" not in compose
 
 
@@ -85,7 +91,8 @@ def test_usb_compose_maps_gpiochip_for_lock_relay():
     assert "LOCK_GPIO_LINE=${LOCK_GPIO_LINE:-75}" in compose
     assert "LOCK_ACTIVE_LOW=${LOCK_ACTIVE_LOW:-1}" in compose
     assert "LOCK_UNLOCK_MS=${LOCK_UNLOCK_MS:-2000}" in compose
-    assert "${LOCK_GPIO_CHIP:-/dev/gpiochip0}:${LOCK_GPIO_CHIP:-/dev/gpiochip0}" in compose
+    assert "${LOCK_GPIO_CHIP:-/dev/gpiochip0}:${LOCK_GPIO_CHIP:-/dev/gpiochip0}" not in compose
+    assert "${LOCK_GPIO_CHIP:-/dev/gpiochip0}:${LOCK_GPIO_CHIP:-/dev/gpiochip0}" in Path("docker-compose.gpio.yml").read_text()
 
 
 def test_usb_compose_uses_separate_preview_and_processing_intervals():
@@ -185,7 +192,7 @@ def test_compose_uses_prebuilt_ghcr_image_by_default():
     common = compose[compose.index("x-palmgate-common:") : compose.index("x-cloudflared-common:")]
 
     assert "image: ${PALMGATE_IMAGE:-ghcr.io/nhaidaar/palmprint-be:latest}" in common
-    assert "build:" not in common
+    assert "build:" in common
 
 
 def test_env_example_documents_palmgate_image():

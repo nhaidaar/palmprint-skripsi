@@ -32,6 +32,7 @@ def reset_runtime_globals():
     main.db = None
     main.palm_processor = None
     main.device_runtime = None
+    main.exit_device_runtime = None
 
 
 def test_lifespan_constructs_processor_without_model_argument_and_cleans_up(monkeypatch):
@@ -91,6 +92,7 @@ def test_lifespan_preserves_body_error_and_cleans_up_when_device_stop_fails(monk
     stop_error = asyncio.CancelledError("stop cancelled")
 
     class FailingDeviceRuntime:
+        lock_controller = None
         def __init__(self):
             self.started = False
             self.stop_called = False
@@ -105,7 +107,7 @@ def test_lifespan_preserves_body_error_and_cleans_up_when_device_stop_fails(monk
     runtime = FailingDeviceRuntime()
     monkeypatch.setattr(main, "Database", FakeDatabase)
     monkeypatch.setattr(main, "PalmProcessor", FakePalmProcessor)
-    monkeypatch.setattr(main, "build_device_runtime", lambda processor, db: runtime)
+    monkeypatch.setattr(main, "build_device_runtime", lambda processor, db, **kwargs: runtime)
     monkeypatch.setattr(main, "DEVICE_RUNTIME_ENABLED", True)
     monkeypatch.setattr(main, "CAMERA_SOURCE", "usb")
 

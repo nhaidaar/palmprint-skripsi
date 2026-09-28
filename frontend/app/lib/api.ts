@@ -9,6 +9,7 @@ export type AccessLog = {
   id: number
   user_id: number | null
   current_nim?: string | null
+  direction?: 'ENTRY' | 'EXIT' | null
   matched_name: string
   status: 'ALLOWED' | 'DENIED'
   similarity: number

@@ -2,7 +2,9 @@
 
 Web-based palmprint recognition app that now supports two operating modes:
 - **Browser mode** — use a phone or desktop browser camera for testing and registration
-- **Device mode** — run a 24x7 USB-camera recognition worker on an Orange Pi
+- **Device mode** — run two 24x7 USB-camera workers on an Orange Pi: ENTRY and EXIT
+
+Both workers share one fixed palm recognition model, `model.tflite`, with no model selector. MediaPipe supplies the separate hand detector used to locate the palm.
 
 ## Requirements
 
@@ -65,7 +67,30 @@ Open: [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
 ## Run with Docker
 
-Docker Compose reads `.env`, not `.env.example`. The example defaults to the USB profile and pulls the prebuilt GHCR image:
+Use a 64-bit Linux image on the Orange Pi Zero 3 (`uname -m` should print `aarch64`). Docker Compose reads `.env`, not `.env.example`. The example defaults to two USB cameras. On the Orange Pi host, find their capture nodes:
+
+```bash
+sudo apt-get install v4l-utils gpiod
+v4l2-ctl --list-devices
+ls -l /dev/v4l/by-path/ /dev/v4l/by-id/
+v4l2-ctl --device=/dev/video0 --all  # replace with each candidate; look for Video Capture
+```
+
+Set `ENTRY_CAMERA_DEVICE_PATH` and `EXIT_CAMERA_DEVICE_PATH` in `.env` to **different capture nodes**. Use `/dev/v4l/by-path/...` to keep ENTRY and EXIT tied to physical USB ports, or `/dev/v4l/by-id/...` if the cameras have unique serial numbers and may move between ports. A webcam can expose extra metadata nodes, and `/dev/video*` numbering can change after reboot. Compose maps the chosen host nodes to `/dev/video0` (ENTRY) and `/dev/video2` (EXIT) inside the container. Registration uses ENTRY.
+
+To run this checkout (including local changes):
+
+```bash
+cp .env.example .env
+# Edit the two camera paths in .env before starting.
+docker compose build palmgate-api-usb palmgate-frontend-usb
+docker compose pull palmgate-proxy-usb
+docker compose up -d --no-build --pull never
+```
+
+Open `http://<device-ip>:8080`. Keep `model.tflite` and `hand_landmarker.task` in the project root. Both are mounted read-only; SQLite data persists in the `palmgate-db` volume. Run one API process so both cameras share one recognition model instance.
+
+To use published GHCR images after these changes have been published:
 
 ```bash
 cp .env.example .env
@@ -81,21 +106,40 @@ docker compose pull
 docker compose up -d
 ```
 
-The running build SHA is shown in the dashboard status card and in `/api/status` as `app.version`.
+The running build SHA is shown in the dashboard status card and in `/api/status` as `app.version` (local builds default to `local`).
+
+GPIO is optional. On Orange Pi Zero 3, PC11 is **physical header pin 12**, listed as GPIO 75 in the [board manual](https://orangepi.net/wp-content/uploads/2023/12/OrangePi_Zero3_H618_user-manual_v1.1.pdf). Check the running OS before enabling the relay:
+
+```bash
+gpioinfo /dev/gpiochip0 | grep -E 'PC11|line[[:space:]]+75:'
+```
+
+The Python GPIO binding uses the kernel's [GPIO v2 interface](https://docs.kernel.org/userspace-api/gpio/chardev.html), available since Linux 5.10; check the board with `uname -r` if GPIO access fails.
+
+Set `LOCK_GPIO_CHIP=/dev/gpiochip0` and `LOCK_GPIO_LINE=75` in `.env` if the `gpioinfo` output matches. These are the chip path and line offset, not the physical header pin number. Set `LOCK_ACTIVE_LOW=1` for a relay triggered by a low signal (`0` for high), and `LOCK_UNLOCK_MS` for its pulse duration. PC11 is a 3.3 V GPIO signal; use a 3.3 V compatible relay driver and common ground, not the pin to power a lock. Leave `LOCK_GPIO_ENABLED=0` in `.env`; the GPIO overlay enables it and maps the chip:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpio.yml up -d --no-build --pull never
+```
+
+Check both camera states with `curl http://localhost:8080/api/status` (`devices.ENTRY` and `devices.EXIT`) and inspect startup errors with `docker compose logs palmgate-api-usb`. An ALLOWED result from either camera pulses the same configured relay.
+
+Cloudflare is optional too. Set `CLOUDFLARE_TUNNEL_TOKEN`, then enable the `tunnel-usb` profile alongside `usb` when remote access is needed.
 
 ## Current features
 
 - **Scan Palm** — browser-camera recognition with ALLOWED / DENIED result
 - **Register** — camera or upload registration that captures 5 left-hand and 5 right-hand samples and stores per-hand templates
-- **Access Log** — timestamped history of recognition attempts
+- **Access Log** — timestamped history with ENTRY/EXIT direction, identity, ALLOWED/DENIED decision, and similarity; Excel exports include direction
 - **Device Status** — shows worker state, camera state, FPS, registration state, and last recognition
-- **USB Runtime** — optional always-on worker for Orange Pi with a USB camera
+- **USB Runtime** — two always-on workers with independent hold/cooldown timers and labeled previews
 
 ## Where to see recognition status
 
 ### 1. Admin dashboard
 Use the **Access Log** tab to see:
 - timestamp
+- direction: `ENTRY` / `EXIT` (`Unspecified` for older logs and browser/upload tests)
 - matched name
 - `ALLOWED` / `DENIED`
 - similarity score
@@ -105,8 +149,8 @@ Recognition events are also printed to the running shell from the shared recogni
 Examples:
 
 ```text
-ALLOWED | user=Naufal | similarity=0.9100
-DENIED | user=Unknown | similarity=0.4200
+ALLOWED | user=Naufal | similarity=0.9100 | direction=ENTRY
+DENIED | user=Unknown | similarity=0.4200 | direction=EXIT
 ```
 
 For the supported Docker Compose deployment, inspect backend logs with:
@@ -123,19 +167,16 @@ The app exposes runtime status at:
 /api/status
 ```
 
-Example response:
+`devices.ENTRY` and `devices.EXIT` report each camera separately. `device` remains an alias for ENTRY. Previews and scan events accept `?direction=ENTRY` or `?direction=EXIT` on `/api/device-registration/preview.mjpg`, `/preview.jpg`, and `/scan-events`. Registration endpoints always use ENTRY.
+
+Abbreviated USB response (other fields omitted):
 
 ```json
 {
-  "app": {"mode": "hybrid", "version": "local"},
-  "database": {"path": "/opt/palmgate/palmprint.db"},
-  "device": {
-    "worker_state": "disabled",
-    "camera_connected": 0,
-    "last_error": null,
-    "fps": null,
-    "last_inference_ms": null,
-    "last_recognition_at": null
+  "app": {"camera_source": "usb", "device_runtime_enabled": true},
+  "devices": {
+    "ENTRY": {"worker_state": "running", "camera_connected": 1},
+    "EXIT": {"worker_state": "running", "camera_connected": 1}
   }
 }
 ```
@@ -194,17 +235,17 @@ This is the easiest way to test before attaching a USB camera.
 5. Use **Log** and the new status card to monitor results
 
 ### Phase 2 — USB camera mode
-When the USB camera is connected to the Orange Pi, run the device worker:
+When both USB cameras are connected to the Orange Pi, run both device workers:
 
 ```bash
-DEVICE_RUNTIME_ENABLED=1 CAMERA_SOURCE=usb CAMERA_DEVICE_PATH=/dev/video0 python -m app.device_runtime
+DEVICE_RUNTIME_ENABLED=1 CAMERA_SOURCE=usb ENTRY_CAMERA_DEVICE_PATH=/dev/video0 EXIT_CAMERA_DEVICE_PATH=/dev/video2 python -m app.device_runtime
 ```
 
 The worker will:
-- capture frames from the USB camera
+- capture frames from the ENTRY and EXIT USB cameras
 - wait for the palm hold threshold
 - run recognition
-- write recognition attempts to the same SQLite database
+- commit recognition attempts with the capturing camera's direction to the same SQLite database before publishing a result or unlocking
 - update `/api/status`
 
 ## Orange Pi service management
@@ -232,7 +273,9 @@ docker compose logs -f palmgate-api-usb
 3. The fixed root `model.tflite` runs on rotations `0°`, `-6°`, and `+6°` and returns 128-dimensional embeddings.
 4. Each embedding is L2-normalized, averaged, and normalized again.
 5. Cosine similarity compares the query embedding against stored per-hand templates using `SIMILARITY_THRESHOLD`, which defaults to `0.75`.
-6. Result is recorded as `ALLOWED` or `DENIED`.
+6. Result is recorded as `ALLOWED` or `DENIED`, with ENTRY/EXIT taken from the worker's fixed camera role. Browser/upload tests have no direction. An allowed attempt indicates recognition approval, not proof that someone physically passed the door.
+
+Adding direction migrates the database automatically and preserves existing users and logs. Existing rows keep an unspecified direction. No database reset is needed for this update. Cooldowns are independent per camera; a palm left in view can produce another attempt after the next hold/cooldown cycle.
 
 ## Cross-device / cross-brightness reliability
 
@@ -240,7 +283,7 @@ USB registration captures 5 samples per hand, averages each hand into a normaliz
 
 ## Database migration notice
 
-> **Breaking change** — the preprocessing pipeline was updated. Embeddings generated by an older version of PalmGate are **not compatible** with the current version.
+> **Historical preprocessing change** — embeddings generated before the existing preprocessing pipeline changed are **not compatible** with the current version. This is separate from the automatic ENTRY/EXIT migration above.
 >
 > Stop PalmGate, remove the old database, and re-register users. For a local process:
 >
@@ -260,4 +303,14 @@ USB registration captures 5 samples per hand, averages each hand into a normaliz
 
 ```bash
 python -m pytest tests/ -v
+```
+
+To run local checks while leaving Docker checks for later:
+
+```bash
+PALMGATE_SKIP_DOTENV=1 python -m pytest tests/ --ignore=tests/test_docker_requirements.py --ignore=tests/test_docker_frontend_deployment.py
+cd frontend
+bun install --frozen-lockfile
+bun run test
+bun run build
 ```

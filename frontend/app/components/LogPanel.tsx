@@ -55,8 +55,8 @@ export function LogPanel({ active, refreshKey = 0 }: LogPanelProps) {
   }, [searchQ, filters.q])
 
   useEffect(() => {
-    void loadLogs()
-  }, [loadLogs, refreshKey])
+    if (active) void loadLogs()
+  }, [active, loadLogs, refreshKey])
 
   const pages = Math.max(1, Math.ceil(count / PAGE_SIZE))
   const filtersActive = Boolean(searchQ || filters.status || filters.startDate || filters.endDate)
@@ -154,17 +154,18 @@ export function LogPanel({ active, refreshKey = 0 }: LogPanelProps) {
       <div className="log-table-wrap">
         <table className="log-table">
           <thead>
-            <tr><th>Time</th><th>Name</th><th>Status</th><th>Match %</th><th>Duration</th><th>Description</th></tr>
+            <tr><th>Time</th><th>Name</th><th>Direction</th><th>Status</th><th>Match %</th><th>Duration</th><th>Description</th></tr>
           </thead>
           <tbody id="logTableBody">
             {busy ? (
-              <tr className="log-empty-row"><td colSpan={6}><div className="log-empty"><span>Loading access log…</span></div></td></tr>
+              <tr className="log-empty-row"><td colSpan={7}><div className="log-empty"><span>Loading access log…</span></div></td></tr>
             ) : rows.length === 0 ? (
-              <tr className="log-empty-row"><td colSpan={6}><div className="log-empty"><span>No access attempts recorded yet</span></div></td></tr>
+              <tr className="log-empty-row"><td colSpan={7}><div className="log-empty"><span>No access attempts recorded yet</span></div></td></tr>
             ) : rows.map((row) => (
               <tr key={row.id}>
                 <td>{row.timestamp}</td>
                 <td>{row.matched_name || 'Unknown'}</td>
+                <td>{row.direction ?? 'Unspecified'}</td>
                 <td><span className={`log-status ${row.status === 'ALLOWED' ? 'allowed' : 'denied'}`}>{row.status}</span></td>
                 <td>{Math.round(row.similarity * 100)}%</td>
                 <td>{row.duration_ms == null ? '—' : `${row.duration_ms} ms`}</td>

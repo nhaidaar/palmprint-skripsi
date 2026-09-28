@@ -25,12 +25,13 @@ FROM python:3.11-slim-bookworm
 LABEL org.opencontainers.image.title="PalmGate" \
       org.opencontainers.image.description="Palm biometric access system"
 
-# Re-install the same system runtime libs in the final layer
+# System libraries needed at runtime (including MediaPipe's audio import)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
         libgomp1 \
         libgl1 \
         libgpiod2 \
+        libportaudio2 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

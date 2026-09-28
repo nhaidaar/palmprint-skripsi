@@ -4,7 +4,7 @@ import logging
 log = logging.getLogger("palmgate")
 
 
-def match_embedding_and_log(palm_processor, db, embedding, threshold, duration_ms: int | None = None):
+def match_embedding_and_log(palm_processor, db, embedding, threshold, duration_ms: int | None = None, direction: str | None = None):
     stored = db.get_all_embeddings()
     result = palm_processor.compute_similarity(embedding, stored, threshold)
     description = None
@@ -17,11 +17,13 @@ def match_embedding_and_log(palm_processor, db, embedding, threshold, duration_m
         similarity=result["similarity"],
         duration_ms=duration_ms,
         description=description,
+        direction=direction,
     )
     log.info(
-        "%s | user=%s | similarity=%.4f",
+        "%s | user=%s | similarity=%.4f | direction=%s",
         result["status"],
         result["name"],
         result["similarity"],
+        direction or "unspecified",
     )
-    return result
+    return {**result, "direction": direction}

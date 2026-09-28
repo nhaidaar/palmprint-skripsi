@@ -122,7 +122,7 @@ def test_logs_export_excel(monkeypatch):
     sheet = load_workbook(BytesIO(response.content))["Access Logs"]
     assert sheet["A1"].value == "PalmGate Access Logs"
     assert sheet["A2"].value == "Search: alice | Status: ALLOWED | From: All | To: All"
-    assert [sheet.cell(4, column).value for column in range(1, 8)] == [
+    assert [sheet.cell(4, column).value for column in range(1, 9)] == [
         "Time",
         "Name",
         "NIM",
@@ -130,9 +130,10 @@ def test_logs_export_excel(monkeypatch):
         "Match %",
         "Duration",
         "Description",
+        "Direction",
     ]
     assert sheet.freeze_panes == "A5"
-    assert sheet.auto_filter.ref == "A4:G5"
+    assert sheet.auto_filter.ref == "A4:H5"
     assert sheet["A5"].value == datetime(2026, 7, 5, 10, 0, 0)
     assert sheet["B5"].value == "Alice"
     assert sheet["C5"].value == "A001"
@@ -178,5 +179,5 @@ def test_logs_export_excel_handles_empty_results(monkeypatch):
     assert response.status_code == 200
     sheet = load_workbook(BytesIO(response.content))["Access Logs"]
     assert sheet["A5"].value == "No matching logs"
-    assert "A5:G5" in {str(cell_range) for cell_range in sheet.merged_cells.ranges}
-    assert sheet.auto_filter.ref == "A4:G4"
+    assert "A5:H5" in {str(cell_range) for cell_range in sheet.merged_cells.ranges}
+    assert sheet.auto_filter.ref == "A4:H4"

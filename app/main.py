@@ -14,18 +14,24 @@ log = logging.getLogger("palmgate")
 db: Database = None
 palm_processor: PalmProcessor = None
 device_runtime = None
+exit_device_runtime = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db, palm_processor, device_runtime
+    global db, palm_processor, device_runtime, exit_device_runtime
     active_error = None
     try:
         db = Database(DB_PATH)
         palm_processor = PalmProcessor()
         if DEVICE_RUNTIME_ENABLED and CAMERA_SOURCE == "usb":
             device_runtime = build_device_runtime(palm_processor, db)
+            exit_device_runtime = build_device_runtime(
+                palm_processor, db, direction="EXIT",
+                lock_controller=device_runtime.lock_controller,
+            )
             device_runtime.start()
+            exit_device_runtime.start()
         yield
     except BaseException as exc:
         active_error = exc
@@ -33,14 +39,16 @@ async def lifespan(app: FastAPI):
     finally:
         cleanup_errors = []
 
-        runtime = device_runtime
+        runtimes = (device_runtime, exit_device_runtime)
         device_runtime = None
-        if runtime is not None:
-            try:
-                runtime.stop()
-            except BaseException as exc:
-                cleanup_errors.append(exc)
-                log.exception("Failed to stop device runtime")
+        exit_device_runtime = None
+        for runtime in runtimes:
+            if runtime is not None:
+                try:
+                    runtime.stop()
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+                    log.exception("Failed to stop device runtime")
 
         processor = palm_processor
         palm_processor = None

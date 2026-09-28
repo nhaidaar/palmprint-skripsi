@@ -75,7 +75,7 @@ def test_recognize_full_frame_uses_processed_roi_embedding(monkeypatch):
         def get_all_embeddings(self):
             return []
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             pass
 
     processor = FakeProcessor()

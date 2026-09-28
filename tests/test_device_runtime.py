@@ -48,7 +48,7 @@ def test_runtime_recognizes_after_hold_threshold():
         def get_all_embeddings(self):
             return [{"id": 1, "name": "Naufal", "embedding": np.ones(4, dtype=np.float32)}]
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged.append((user_id, matched_name, status, similarity, duration_ms, description))
 
         def upsert_device_status(self, **kwargs):
@@ -109,7 +109,7 @@ def test_runtime_unlocks_once_for_allowed_match():
         def get_all_embeddings(self):
             return [{"id": 1, "name": "Naufal", "embedding": np.ones(4, dtype=np.float32)}]
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged.append((user_id, matched_name, status, similarity, duration_ms, description))
 
         def upsert_device_status(self, **kwargs):
@@ -177,7 +177,7 @@ def test_runtime_does_not_unlock_for_denied_match():
         def get_all_embeddings(self):
             return []
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged.append((user_id, matched_name, status, similarity, duration_ms, description))
 
         def upsert_device_status(self, **kwargs):
@@ -418,7 +418,7 @@ def test_runtime_does_not_embed_until_hold_window_completes():
         def get_all_embeddings(self):
             return []
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged.append((user_id, matched_name, status, similarity, duration_ms, description))
 
         def upsert_device_status(self, **kwargs):
@@ -488,7 +488,7 @@ def test_runtime_scans_again_after_cooldown_with_hand_still_present():
         def get_all_embeddings(self):
             return [{"id": 1, "name": "Naufal", "embedding": np.ones(4, dtype=np.float32)}]
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged.append((user_id, matched_name, status, similarity, duration_ms, description))
 
         def upsert_device_status(self, **kwargs):
@@ -573,7 +573,7 @@ def test_runtime_recognizes_clipped_detected_hand_like_legacy_flow():
         def get_all_embeddings(self):
             return []
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged.append((user_id, matched_name, status, similarity, duration_ms, description))
 
         def upsert_device_status(self, **kwargs):

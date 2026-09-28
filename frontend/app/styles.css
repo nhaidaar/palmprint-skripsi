@@ -196,6 +196,8 @@ body {
   transform: scaleX(-1);
 }
 
+.exit-camera { margin-top: 1rem; }
+
 /* Landmark overlay canvas */
 .overlay-canvas {
   position: absolute;

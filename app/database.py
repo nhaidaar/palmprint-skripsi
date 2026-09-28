@@ -1,4 +1,6 @@
 import sqlite3
+import threading
+from functools import wraps
 import numpy as np
 from pathlib import Path
 
@@ -11,8 +13,18 @@ class DuplicateNimError(ValueError):
     pass
 
 
+def _serialized(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        # ponytail: one SQLite connection; use a connection pool if traffic grows.
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return call
+
+
 class Database:
     def __init__(self, db_path: "str | Path"):
+        self._lock = threading.RLock()
         self.db_path = str(db_path)
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -53,21 +65,40 @@ class Database:
                 timestamp       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
-            CREATE TABLE IF NOT EXISTS device_status (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                worker_state TEXT NOT NULL,
-                camera_connected INTEGER NOT NULL,
-                last_error TEXT,
-                fps REAL,
-                last_inference_ms REAL,
-                last_recognition_at TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
         """)
         self._ensure_user_nim_column()
         self._ensure_user_embedding_metadata_columns()
         self._ensure_access_log_metadata_columns()
+        self._ensure_device_status_table()
         self.conn.commit()
+
+    def _ensure_device_status_table(self):
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(device_status)")}
+        with self.conn:
+            if not self.conn.in_transaction:
+                self.conn.execute("BEGIN")
+            if "id" in columns:
+                self.conn.execute("ALTER TABLE device_status RENAME TO legacy_device_status")
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS device_status (
+                    direction TEXT PRIMARY KEY NOT NULL CHECK (direction IN ('ENTRY', 'EXIT')),
+                    worker_state TEXT NOT NULL,
+                    camera_connected INTEGER NOT NULL,
+                    last_error TEXT,
+                    fps REAL,
+                    last_inference_ms REAL,
+                    last_recognition_at TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            if "id" in columns:
+                self.conn.execute("""
+                    INSERT INTO device_status
+                    SELECT 'ENTRY', worker_state, camera_connected, last_error, fps,
+                           last_inference_ms, last_recognition_at, updated_at
+                    FROM legacy_device_status
+                """)
+                self.conn.execute("DROP TABLE legacy_device_status")
 
     def _ensure_user_nim_column(self):
         columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(users)")}
@@ -89,7 +120,13 @@ class Database:
             self.conn.execute("ALTER TABLE access_logs ADD COLUMN duration_ms INTEGER")
         if "description" not in columns:
             self.conn.execute("ALTER TABLE access_logs ADD COLUMN description TEXT")
+        if "direction" not in columns:
+            self.conn.execute(
+                "ALTER TABLE access_logs ADD COLUMN direction TEXT "
+                "CHECK (direction IN ('ENTRY', 'EXIT'))"
+            )
 
+    @_serialized
     def add_user(
         self,
         name: str,
@@ -135,12 +172,14 @@ class Database:
             self.conn.rollback()
             raise
 
+    @_serialized
     def get_all_users(self) -> list:
         rows = self.conn.execute(
             "SELECT id, nim, name, created_at FROM users ORDER BY id"
         ).fetchall()
         return [dict(r) for r in rows]
 
+    @_serialized
     def get_user(self, user_id: int) -> dict | None:
         row = self.conn.execute(
             "SELECT id, nim, name, created_at FROM users WHERE id = ?",
@@ -148,6 +187,7 @@ class Database:
         ).fetchone()
         return dict(row) if row else None
 
+    @_serialized
     def update_user(self, user_id: int, *, nim: str | None = None, name: str | None = None) -> dict | None:
         clean_nim = nim.strip() if nim is not None else None
         clean_name = name.strip() if name is not None else None
@@ -176,6 +216,7 @@ class Database:
 
         return self.get_user(user_id)
 
+    @_serialized
     def get_all_embeddings(self) -> list:
         """Return one entry per stored embedding.
 
@@ -219,6 +260,7 @@ class Database:
                 })
         return result
 
+    @_serialized
     def delete_user(self, user_id: int) -> bool:
         # Preserve historical access logs when a user is removed. Existing log
         # rows keep their matched_name/status/similarity, but their foreign key
@@ -231,6 +273,7 @@ class Database:
         self.conn.commit()
         return cursor.rowcount > 0
 
+    @_serialized
     def add_access_log(
         self,
         user_id,
@@ -239,16 +282,19 @@ class Database:
         similarity: float,
         duration_ms: int | None = None,
         description: str | None = None,
+        direction: str | None = None,
     ):
-        self.conn.execute(
-            """
-            INSERT INTO access_logs (
-                user_id, matched_name, status, similarity, duration_ms, description
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (user_id, matched_name, status, similarity, duration_ms, description),
-        )
-        self.conn.commit()
+        if direction not in (None, "ENTRY", "EXIT"):
+            raise ValueError("direction must be ENTRY or EXIT")
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO access_logs (
+                    user_id, matched_name, status, similarity, duration_ms, description, direction
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, matched_name, status, similarity, duration_ms, description, direction),
+            )
 
     def _access_log_filter_sql(
         self,
@@ -281,6 +327,7 @@ class Database:
             return "", params
         return "WHERE " + " AND ".join(clauses), params
 
+    @_serialized
     def get_access_logs(
         self,
         limit: int | None = 20,
@@ -303,7 +350,7 @@ class Database:
         rows = self.conn.execute(
             "SELECT access_logs.id, access_logs.user_id, users.nim AS current_nim, "
             "access_logs.matched_name, access_logs.status, access_logs.similarity, "
-            "access_logs.duration_ms, access_logs.description, access_logs.timestamp "
+            "access_logs.duration_ms, access_logs.description, access_logs.timestamp, access_logs.direction "
             "FROM access_logs "
             "LEFT JOIN users ON users.id = access_logs.user_id "
             f"{where_sql} "
@@ -312,6 +359,7 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    @_serialized
     def count_access_logs(
         self,
         *,
@@ -333,6 +381,7 @@ class Database:
             params,
         ).fetchone()[0]
 
+    @_serialized
     def upsert_device_status(
         self,
         *,
@@ -342,13 +391,14 @@ class Database:
         fps: float | None,
         last_inference_ms: float | None,
         last_recognition_at: str | None = None,
+        direction: str = "ENTRY",
     ):
         self.conn.execute(
             """
             INSERT INTO device_status (
-                id, worker_state, camera_connected, last_error, fps, last_inference_ms, last_recognition_at, updated_at
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(id) DO UPDATE SET
+                direction, worker_state, camera_connected, last_error, fps, last_inference_ms, last_recognition_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(direction) DO UPDATE SET
                 worker_state = excluded.worker_state,
                 camera_connected = excluded.camera_connected,
                 last_error = excluded.last_error,
@@ -358,6 +408,7 @@ class Database:
                 updated_at = CURRENT_TIMESTAMP
             """,
             (
+                direction,
                 worker_state,
                 int(camera_connected),
                 last_error,
@@ -368,11 +419,14 @@ class Database:
         )
         self.conn.commit()
 
-    def get_device_status(self) -> dict | None:
+    @_serialized
+    def get_device_status(self, direction: str = "ENTRY") -> dict | None:
         row = self.conn.execute(
-            "SELECT worker_state, camera_connected, last_error, fps, last_inference_ms, last_recognition_at, updated_at FROM device_status WHERE id = 1"
+            "SELECT worker_state, camera_connected, last_error, fps, last_inference_ms, last_recognition_at, updated_at FROM device_status WHERE direction = ?",
+            (direction,),
         ).fetchone()
         return dict(row) if row else None
 
+    @_serialized
     def close(self):
         self.conn.close()

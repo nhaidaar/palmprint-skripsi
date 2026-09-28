@@ -10,6 +10,7 @@ type Landmark = { x: number; y: number }
 
 type RecognizeResult = {
   status?: string
+  direction?: 'ENTRY' | 'EXIT' | null
   name?: string
   similarity?: number
   roi_image?: string
@@ -54,11 +55,10 @@ function drawHandOverlay(canvas: HTMLCanvasElement, video: HTMLVideoElement, lan
 
 export function ScanPanel({ active }: ScanPanelProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
-  const usbPreviewRef = useRef<HTMLImageElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const overlayRef = useRef<HTMLCanvasElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
-  const eventsRef = useRef<EventSource | null>(null)
+  const eventsRef = useRef<EventSource[]>([])
   const handLandmarkerRef = useRef<any>(null)
   const rafRef = useRef<number | null>(null)
   const holdStartRef = useRef<number | null>(null)
@@ -76,12 +76,14 @@ export function ScanPanel({ active }: ScanPanelProps) {
   const [roiImage, setRoiImage] = useState('')
   const [stats, setStats] = useState({ total: 0, allowed: 0, denied: 0, users: 0 })
   const [appVersion, setAppVersion] = useState('local')
+  const [devices, setDevices] = useState<Record<string, { camera_connected?: number; last_error?: string }>>({})
 
   autoModeRef.current = autoMode
   busyRef.current = busy
 
   useEffect(() => {
     let cancelled = false
+    let statusInterval: ReturnType<typeof setInterval> | undefined
 
     async function startCamera() {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true })
@@ -129,15 +131,35 @@ export function ScanPanel({ active }: ScanPanelProps) {
         setAppVersion(data.app?.version ?? 'local')
         setStats((current) => ({ ...current, users: data.users?.total ?? current.users }))
         if (usb) {
-          eventsRef.current = new EventSource('/api/device-registration/scan-events')
-          eventsRef.current.onmessage = (event) => {
+          setDevices(data.devices ?? {})
+          statusInterval = setInterval(async () => {
             try {
-              const data = JSON.parse(event.data)
-              if (data.stage === 'recognized' && data.result) setResult(data.result)
+              const status = await apiJson<any>('/api/status')
+              if (!cancelled) setDevices(status.devices ?? {})
             } catch {
-              setResult({ status: event.data })
+              if (!cancelled) setDevices({})
             }
-          }
+          }, 2000)
+          eventsRef.current = ['ENTRY', 'EXIT'].map((direction) => {
+            const events = new EventSource(`/api/device-registration/scan-events?direction=${direction}`)
+            events.onmessage = (event) => {
+              try {
+                const data = JSON.parse(event.data)
+                if (data.stage === 'recognized' && data.result) {
+                  setResult(data.result)
+                  setStats((current) => ({
+                    ...current,
+                    total: current.total + 1,
+                    allowed: current.allowed + (data.result.status === 'ALLOWED' ? 1 : 0),
+                    denied: current.denied + (data.result.status === 'DENIED' ? 1 : 0),
+                  }))
+                }
+              } catch {
+                setError('Could not read camera event')
+              }
+            }
+            return events
+          })
         } else {
           const { handLandmarker } = await createHandLandmarker()
           if (cancelled) {
@@ -157,7 +179,8 @@ export function ScanPanel({ active }: ScanPanelProps) {
     void boot()
     return () => {
       cancelled = true
-      eventsRef.current?.close()
+      eventsRef.current.forEach((events) => events.close())
+      clearInterval(statusInterval)
       streamRef.current?.getTracks().forEach((track) => track.stop())
       handLandmarkerRef.current?.close?.()
       handLandmarkerRef.current = null
@@ -165,10 +188,10 @@ export function ScanPanel({ active }: ScanPanelProps) {
     }
   }, [])
 
-  function captureFrame(source: HTMLVideoElement | HTMLImageElement | null) {
+  function captureFrame(source: HTMLVideoElement | null) {
     if (!source || !canvasRef.current) throw new Error('No camera frame available')
-    const width = source instanceof HTMLVideoElement ? source.videoWidth : source.naturalWidth
-    const height = source instanceof HTMLVideoElement ? source.videoHeight : source.naturalHeight
+    const width = source.videoWidth
+    const height = source.videoHeight
     if (!width || !height) throw new Error('Camera is not ready')
     const canvas = canvasRef.current
     canvas.width = width
@@ -195,12 +218,11 @@ export function ScanPanel({ active }: ScanPanelProps) {
   }
 
   async function triggerScan() {
-    if (busyRef.current) return
+    if (busyRef.current || usbDeviceMode) return
     setBusy(true)
     setError('')
     try {
-      const scanSource = usbDeviceMode ? usbPreviewRef.current : videoRef.current
-      await submitRecognitionImage(captureFrame(scanSource), usbDeviceMode ? 'usb-preview' : 'camera')
+      await submitRecognitionImage(captureFrame(videoRef.current), 'camera')
     } catch (err) {
       const failure = scanFailureState(err, 'Scan failed')
       setError(failure.error)
@@ -243,13 +265,13 @@ export function ScanPanel({ active }: ScanPanelProps) {
         <div className="camera-col">
           <div className={`camera-frame${guidance.includes('detected') ? ' hand-detected' : ''}`} id="cameraFrame">
             {usbDeviceMode ? (
-              <img id="usbPreview" ref={usbPreviewRef} className="usb-preview" src={USB_PREVIEW_STREAM_URL} alt="USB camera preview" />
+              <img id="usbPreview" className="usb-preview" src={`${USB_PREVIEW_STREAM_URL}?direction=ENTRY`} alt="Entry camera preview" />
             ) : (
               <video ref={videoRef} id="video" autoPlay playsInline muted />
             )}
             <canvas ref={overlayRef} id="overlayCanvas" className="overlay-canvas" />
             <canvas ref={canvasRef} id="canvas" style={{ display: 'none' }} />
-            <div className="autoscan-ring" id="autoscanRing" style={{ display: autoMode && !busy ? undefined : 'none' }}>
+            <div className="autoscan-ring" id="autoscanRing" style={{ display: !usbDeviceMode && autoMode && !busy ? undefined : 'none' }}>
               <svg viewBox="0 0 100 100" className="ring-svg" aria-hidden="true">
                 <circle className="ring-track" cx="50" cy="50" r="42" />
                 <circle className="ring-fill" cx="50" cy="50" r="42" id="ringFill" />
@@ -265,11 +287,19 @@ export function ScanPanel({ active }: ScanPanelProps) {
             <div className="brightness-badge" id="brightnessBadge" style={{ display: 'none' }} />
             <div className="camera-status" id="cameraStatus">
               <span className="cam-dot" />
-              {usbDeviceMode ? 'USB camera' : error ? 'Camera offline' : 'Camera ready'}
+              {usbDeviceMode ? 'Entry camera' : error ? 'Camera offline' : 'Camera ready'}
             </div>
           </div>
 
+          {usbDeviceMode && (
+            <div className="camera-frame exit-camera">
+              <img className="usb-preview" src={`${USB_PREVIEW_STREAM_URL}?direction=EXIT`} alt="Exit camera preview" />
+              <div className="camera-status"><span className="cam-dot" />Exit camera</div>
+            </div>
+          )}
           <div className="scan-controls">
+            {!usbDeviceMode && <>
+
             <button className="btn btn-primary btn-scan" id="btnScan" type="button" disabled={busy} onClick={() => void triggerScan()}>
               <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                 <path d="M10 2C5.582 2 2 5.582 2 10s3.582 8 8 8 8-3.582 8-8-3.582-8-8-8z" stroke="currentColor" strokeWidth="1.5" />
@@ -280,6 +310,7 @@ export function ScanPanel({ active }: ScanPanelProps) {
             <button className="btn btn-mode" id="btnMode" type="button" aria-label="Toggle auto-detect mode" onClick={() => setAutoMode((value) => !value)}>
               {autoMode ? 'Auto' : 'Manual'}
             </button>
+            </>}
             <label className="btn btn-secondary dev-only scan-upload-btn" id="scanUploadLabel" hidden={!devFeatures}>
               Upload photo
               <input className="scan-upload-input" id="scanUploadFile" type="file" accept="image/*" onChange={handleScanUpload} />
@@ -305,6 +336,7 @@ export function ScanPanel({ active }: ScanPanelProps) {
                 </div>
                 <div className={`result-name ${result.status === 'ALLOWED' ? 'allowed' : 'denied'}`} id="resultName">{result.name ?? 'Unknown palm'}</div>
                 <div className="result-meta">
+                  {result.direction && <div className="meta-row"><span className="meta-label">Direction</span><span className="meta-value">{result.direction}</span></div>}
                   <div className="meta-row" id="timingRow" style={{ display: scanStartedAt == null ? 'none' : undefined }}>
                     <span className="meta-label">Identified in</span>
                     <span className="meta-value meta-timing" id="resultTiming">{scanStartedAt == null ? '—' : `${Math.round(performance.now() - scanStartedAt)} ms`}</span>
@@ -339,7 +371,12 @@ export function ScanPanel({ active }: ScanPanelProps) {
           <div className="device-status-card" id="deviceStatusCard">
             <div className="device-status-row"><span>Version</span><strong id="appVersion">{appVersion}</strong></div>
             <div className="device-status-row"><span>Worker</span><strong id="deviceWorkerState">{usbDeviceMode ? 'enabled' : 'disabled'}</strong></div>
-            <div className="device-status-row"><span>Camera</span><strong id="deviceCameraState">{error ? 'offline' : 'online'}</strong></div>
+            {usbDeviceMode ? ['ENTRY', 'EXIT'].map((direction) => (
+              <div className="device-status-row" key={direction}>
+                <span>{direction === 'ENTRY' ? 'Entry camera' : 'Exit camera'}</span>
+                <strong title={devices[direction]?.last_error}>{devices[direction]?.camera_connected ? 'online' : 'offline'}</strong>
+              </div>
+            )) : <div className="device-status-row"><span>Camera</span><strong id="deviceCameraState">{error ? 'offline' : 'online'}</strong></div>}
             <div className="device-status-row"><span>FPS</span><strong id="deviceFps">—</strong></div>
             <div className="device-status-row"><span>Last recognition</span><strong id="deviceLastRecognition">{result?.status ?? '—'}</strong></div>
           </div>

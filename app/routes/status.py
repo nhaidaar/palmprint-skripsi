@@ -12,11 +12,7 @@ from app.config import (
 router = APIRouter()
 
 
-@router.get("/api/status")
-async def status():
-    from app.main import db, device_runtime
-
-    row = db.get_device_status() if db is not None else None
+def _device_status(row, device_runtime):
     device = row or {
         "worker_state": "disabled",
         "camera_connected": 0,
@@ -29,7 +25,7 @@ async def status():
         session = device_runtime.registration_session
         device = {
             **device,
-            "worker_state": device_runtime.worker_state,
+            "worker_state": "error" if device.get("last_error") else device_runtime.worker_state,
             "registration_active": session is not None,
             "registration_session_id": session.id if session else None,
             "registration_sample_index": session.current_sample_index if session else None,
@@ -45,6 +41,15 @@ async def status():
             "registration_captured_count": 0,
             "scan_state": None,
         }
+    return device
+
+
+@router.get("/api/status")
+async def status():
+    from app.main import db, device_runtime, exit_device_runtime
+
+    entry = _device_status(db.get_device_status() if db else None, device_runtime)
+    exit = _device_status(db.get_device_status("EXIT") if db else None, exit_device_runtime)
     return {
         "app": {
             "mode": "hybrid",
@@ -55,5 +60,6 @@ async def status():
             "device_runtime_enabled": DEVICE_RUNTIME_ENABLED,
         },
         "database": {"path": str(DB_PATH)},
-        "device": device,
+        "device": entry,
+        "devices": {"ENTRY": entry, "EXIT": exit},
     }
