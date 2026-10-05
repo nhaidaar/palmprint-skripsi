@@ -50,12 +50,13 @@ def test_compose_does_not_configure_old_notebook_rembg_path():
     assert "NOTEBOOK_REMBG" not in compose
 
 
-def test_env_example_selects_usb_compose_profile_by_default():
+def test_env_example_selects_browser_debug_profile_by_default():
     env_example = Path(".env.example").read_text()
 
-    assert "COMPOSE_PROFILES=usb" in env_example
-    assert "DEVICE_RUNTIME_ENABLED=1" in env_example
-    assert "CAMERA_SOURCE=usb" in env_example
+    assert "COMPOSE_PROFILES=browser" in env_example
+    assert "APP_DEBUG=true" in env_example
+    assert "DEVICE_RUNTIME_ENABLED=" not in env_example
+    assert "CAMERA_SOURCE=" not in env_example
     assert "CAMERA_DEVICE_PATH=/dev/video0" in env_example
     assert "LOCK_GPIO_ENABLED=0" in env_example
     assert "LOCK_GPIO_LINE=75" in env_example
@@ -75,7 +76,9 @@ def test_readme_documents_prebuilt_image_update_flow():
 def test_usb_compose_uses_configurable_camera_device_path():
     compose = Path("docker-compose.yml").read_text()
 
-    assert "CAMERA_SOURCE=usb" in compose
+    assert "APP_DEBUG=${APP_DEBUG:-true}" in compose
+    assert "CAMERA_SOURCE=" not in compose
+    assert "DEVICE_RUNTIME_ENABLED=" not in compose
     assert "ENTRY_CAMERA_DEVICE_PATH=/dev/video0" in compose
     assert "EXIT_CAMERA_DEVICE_PATH=/dev/video2" in compose
     assert 'source: "${ENTRY_CAMERA_DEVICE_PATH:-/dev/video0}"\n        target: /dev/video0' in compose

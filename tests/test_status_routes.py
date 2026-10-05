@@ -17,6 +17,28 @@ def test_status_endpoint_returns_device_status():
     assert "device_runtime_enabled" in data["app"]
 
 
+def test_debug_status_reports_disabled_hardware_even_with_saved_usb_state(monkeypatch):
+    import app.main as main
+    import app.routes.status as status_route
+
+    class SavedDeviceDB:
+        def get_device_status(self, direction="ENTRY"):
+            return {"worker_state": "running", "camera_connected": 1}
+
+    monkeypatch.setattr(main, "db", SavedDeviceDB())
+    monkeypatch.setattr(main, "device_runtime", None)
+    monkeypatch.setattr(main, "exit_device_runtime", None)
+    monkeypatch.setattr(status_route, "APP_DEBUG", True, raising=False)
+    monkeypatch.setattr(status_route, "DEVICE_RUNTIME_ENABLED", False)
+    monkeypatch.setattr(status_route, "LOCK_GPIO_ENABLED", False, raising=False)
+    data = TestClient(app).get("/api/status").json()
+    assert data["app"]["debug"] is True
+    assert data["app"]["mode"] == "debug"
+    assert data["app"]["gpio_enabled"] is False
+    assert all(device["worker_state"] == "disabled" and device["camera_connected"] == 0
+               for device in data["devices"].values())
+
+
 def test_status_includes_usb_scan_state(monkeypatch):
     import app.main as main
 

@@ -1,11 +1,13 @@
 from fastapi import APIRouter
 
 from app.config import (
+    APP_DEBUG,
     APP_ENV,
     CAMERA_SOURCE,
     DB_PATH,
     DEVICE_RUNTIME_ENABLED,
     DEV_FEATURES_ENABLED,
+    LOCK_GPIO_ENABLED,
     PALMGATE_VERSION,
 )
 
@@ -48,11 +50,13 @@ def _device_status(row, device_runtime):
 async def status():
     from app.main import db, device_runtime, exit_device_runtime
 
-    entry = _device_status(db.get_device_status() if db else None, device_runtime)
-    exit = _device_status(db.get_device_status("EXIT") if db else None, exit_device_runtime)
+    entry = _device_status(db.get_device_status() if db and DEVICE_RUNTIME_ENABLED else None, device_runtime)
+    exit = _device_status(db.get_device_status("EXIT") if db and DEVICE_RUNTIME_ENABLED else None, exit_device_runtime)
     return {
         "app": {
-            "mode": "hybrid",
+            "mode": "debug" if APP_DEBUG else "non-debug",
+            "debug": APP_DEBUG,
+            "gpio_enabled": LOCK_GPIO_ENABLED,
             "version": PALMGATE_VERSION,
             "environment": APP_ENV,
             "dev_features": DEV_FEATURES_ENABLED,

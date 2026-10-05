@@ -56,9 +56,8 @@ services:
     environment:
       # Database is stored in the named volume below so it survives rebuilds.
       - DB_PATH=/data/palmprint.db
-      # Browser mode: use a phone/laptop camera through the web UI.
-      - DEVICE_RUNTIME_ENABLED=0
-      - CAMERA_SOURCE=browser
+      # Debug mode uses the browser camera and always disables GPIO.
+      - APP_DEBUG=${APP_DEBUG:-true}
 
   palmgate-frontend-browser:
     <<: *frontend-common
@@ -83,9 +82,8 @@ services:
     environment:
       # Database is stored in the named volume below so it survives rebuilds.
       - DB_PATH=/data/palmprint.db
-      # One shared recognition model, one worker per camera. Registration uses ENTRY.
-      - DEVICE_RUNTIME_ENABLED=1
-      - CAMERA_SOURCE=usb
+      # Set APP_DEBUG=false for two USB workers. Registration uses ENTRY.
+      - APP_DEBUG=${APP_DEBUG:-true}
       - ENTRY_CAMERA_DEVICE_PATH=/dev/video0
       - EXIT_CAMERA_DEVICE_PATH=/dev/video2
       - DEVICE_PREVIEW_FRAME_INTERVAL_MS=33

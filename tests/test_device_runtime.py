@@ -1096,3 +1096,16 @@ def test_registration_tick_updates_real_guidance_from_processor():
     assert processor.called is True
     assert runtime.registration_session.last_guidance["acceptable"] is True
     assert runtime.registration_session.last_guidance["target"] == "center"
+def test_standalone_usb_workers_refuse_debug_mode_before_creating_database(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    db_path = tmp_path / "must-not-create.db"
+    env = {**os.environ, "PALMGATE_SKIP_DOTENV": "1", "APP_DEBUG": "true",
+           "LOCK_GPIO_ENABLED": "1", "DB_PATH": str(db_path)}
+    result = subprocess.run([sys.executable, "-m", "app.device_runtime"],
+                            env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+    assert "APP_DEBUG=false" in result.stderr
+    assert not db_path.exists()

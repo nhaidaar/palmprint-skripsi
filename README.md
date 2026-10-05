@@ -1,8 +1,10 @@
 # PALMGATE — Palmprint Recognition Preview
 
-Web-based palmprint recognition app that now supports two operating modes:
-- **Browser mode** — use a phone or desktop browser camera for testing and registration
-- **Device mode** — run two 24x7 USB-camera workers on an Orange Pi: ENTRY and EXIT
+Web-based palmprint recognition app with two operating modes controlled by `APP_DEBUG`:
+- **Debug (`APP_DEBUG=true`, default)** — browser camera for testing and registration. The Scan tab has Entry/Exit buttons to simulate either camera role; results and access logs include the selected direction. GPIO is always disabled, even if `LOCK_GPIO_ENABLED=1`.
+- **Non-debug (`APP_DEBUG=false`)** — two 24x7 USB-camera workers on an Orange Pi: ENTRY and EXIT. GPIO is optional and still requires `LOCK_GPIO_ENABLED=1`.
+
+Set `APP_DEBUG` in `.env` or the process environment, then restart the API. `APP_ENV`, `CAMERA_SOURCE`, and `DEVICE_RUNTIME_ENABLED` are no longer input settings; environment, camera source, and worker state are derived from `APP_DEBUG`. Invalid boolean values stop startup rather than selecting hardware mode accidentally.
 
 Both workers share one fixed palm recognition model, `model.tflite`, with no model selector. MediaPipe supplies the separate hand detector used to locate the palm.
 
@@ -60,14 +62,33 @@ cd frontend && bun run sync:static-vendor
 ## Run locally
 
 ```bash
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+APP_DEBUG=true uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Open: [http://127.0.0.1:8000](http://127.0.0.1:8000)
+In another terminal, start the dashboard:
+
+```bash
+cd frontend
+bun install --frozen-lockfile
+bun run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000). In **Scan Palm**, choose **Entry** (default) or **Exit** under **Debug input**. Both preview panels share one browser camera: the selected panel is live; the other is blank until used, then shows its last frame before switching. Snapshots clear on page reload. Switching roles resets the palm hold timer and clears the previous result; manual, automatic, and uploaded scans use the selected role. Registration continues to use the browser camera without a direction selector. Browser camera access requires HTTPS or localhost.
 
 ## Run with Docker
 
-Use a 64-bit Linux image on the Orange Pi Zero 3 (`uname -m` should print `aarch64`). Docker Compose reads `.env`, not `.env.example`. The example defaults to two USB cameras. On the Orange Pi host, find their capture nodes:
+Docker Compose reads `.env`, not `.env.example`. The example defaults to debug mode with the `browser` profile, which does not map USB or GPIO devices:
+
+```bash
+cp .env.example .env
+docker compose build palmgate-api-browser palmgate-frontend-browser
+docker compose pull palmgate-proxy-browser
+docker compose up -d --no-build --pull never
+```
+
+Open `http://localhost:8080`. For non-debug mode, set both `APP_DEBUG=false` and `COMPOSE_PROFILES=usb` in `.env`; the profile selects containers with USB device mappings, while `APP_DEBUG` controls application behavior. Stop the old profile before switching (`docker compose --profile browser down` or `docker compose --profile usb down`, without `-v` to preserve data).
+
+Use a 64-bit Linux image on the Orange Pi Zero 3 (`uname -m` should print `aarch64`). On the Orange Pi host, find the two camera capture nodes:
 
 ```bash
 sudo apt-get install v4l-utils gpiod
@@ -82,7 +103,7 @@ To run this checkout (including local changes):
 
 ```bash
 cp .env.example .env
-# Edit the two camera paths in .env before starting.
+# Set APP_DEBUG=false, COMPOSE_PROFILES=usb, and the two camera paths in .env.
 docker compose build palmgate-api-usb palmgate-frontend-usb
 docker compose pull palmgate-proxy-usb
 docker compose up -d --no-build --pull never
@@ -122,13 +143,13 @@ Set `LOCK_GPIO_CHIP=/dev/gpiochip0` and `LOCK_GPIO_LINE=75` in `.env` if the `gp
 docker compose -f docker-compose.yml -f docker-compose.gpio.yml up -d --no-build --pull never
 ```
 
-Check both camera states with `curl http://localhost:8080/api/status` (`devices.ENTRY` and `devices.EXIT`) and inspect startup errors with `docker compose logs palmgate-api-usb`. An ALLOWED result from either camera pulses the same configured relay.
+The overlay requires `APP_DEBUG=false` to actuate GPIO; debug mode always disables the relay. Check both camera states with `curl http://localhost:8080/api/status` (`devices.ENTRY` and `devices.EXIT`) and inspect startup errors with `docker compose logs palmgate-api-usb`. With GPIO enabled, an ALLOWED result from either USB camera pulses the same configured relay.
 
 Cloudflare is optional too. Set `CLOUDFLARE_TUNNEL_TOKEN`, then enable the `tunnel-usb` profile alongside `usb` when remote access is needed.
 
 ## Current features
 
-- **Scan Palm** — browser-camera recognition with ALLOWED / DENIED result
+- **Scan Palm** — browser debug recognition with Entry/Exit selection and ALLOWED / DENIED result
 - **Register** — camera or upload registration that captures 5 left-hand and 5 right-hand samples and stores per-hand templates
 - **Access Log** — timestamped history with ENTRY/EXIT direction, identity, ALLOWED/DENIED decision, and similarity; Excel exports include direction
 - **Device Status** — shows worker state, camera state, FPS, registration state, and last recognition
@@ -139,7 +160,7 @@ Cloudflare is optional too. Set `CLOUDFLARE_TUNNEL_TOKEN`, then enable the `tunn
 ### 1. Admin dashboard
 Use the **Access Log** tab to see:
 - timestamp
-- direction: `ENTRY` / `EXIT` (`Unspecified` for older logs and browser/upload tests)
+- direction: `ENTRY` / `EXIT` (physical camera role in non-debug mode, selected role in debug mode; `Unspecified` for older or unlabeled attempts)
 - matched name
 - `ALLOWED` / `DENIED`
 - similarity score
@@ -173,7 +194,7 @@ Abbreviated USB response (other fields omitted):
 
 ```json
 {
-  "app": {"camera_source": "usb", "device_runtime_enabled": true},
+  "app": {"mode": "non-debug", "debug": false, "camera_source": "usb", "device_runtime_enabled": true, "gpio_enabled": false},
   "devices": {
     "ENTRY": {"worker_state": "running", "camera_connected": 1},
     "EXIT": {"worker_state": "running", "camera_connected": 1}
@@ -223,12 +244,12 @@ Seeded users are for initial testing only. Re-register users with the USB two-ha
 ### Phase 1 — iPhone test mode over Wi-Fi
 This is the easiest way to test before attaching a USB camera.
 
-1. Run the API on the Orange Pi:
+1. Set `APP_DEBUG=true` and `COMPOSE_PROFILES=browser` in `.env`, then start the browser Docker profile:
    ```bash
-   uvicorn app.main:app --host 0.0.0.0 --port 8000
+   docker compose --profile browser up -d
    ```
 2. Put the Orange Pi and iPhone on the same Wi-Fi network
-3. Open `http://<orange-pi-ip>:8000` on the iPhone
+3. Open the dashboard through HTTPS on the iPhone (a plain HTTP LAN address does not allow browser camera access).
 4. Use the phone camera for:
    - **Scan** tab testing
    - **Register** tab enrollment
@@ -238,7 +259,7 @@ This is the easiest way to test before attaching a USB camera.
 When both USB cameras are connected to the Orange Pi, run both device workers:
 
 ```bash
-DEVICE_RUNTIME_ENABLED=1 CAMERA_SOURCE=usb ENTRY_CAMERA_DEVICE_PATH=/dev/video0 EXIT_CAMERA_DEVICE_PATH=/dev/video2 python -m app.device_runtime
+APP_DEBUG=false ENTRY_CAMERA_DEVICE_PATH=/dev/video0 EXIT_CAMERA_DEVICE_PATH=/dev/video2 python -m app.device_runtime
 ```
 
 The worker will:
@@ -254,6 +275,7 @@ This repository does not include systemd unit files. Use the USB Docker Compose 
 
 ```bash
 cp .env.example .env
+# Set APP_DEBUG=false and COMPOSE_PROFILES=usb in .env.
 docker compose pull
 docker compose --profile usb up -d
 ```
@@ -273,7 +295,7 @@ docker compose logs -f palmgate-api-usb
 3. The fixed root `model.tflite` runs on rotations `0°`, `-6°`, and `+6°` and returns 128-dimensional embeddings.
 4. Each embedding is L2-normalized, averaged, and normalized again.
 5. Cosine similarity compares the query embedding against stored per-hand templates using `SIMILARITY_THRESHOLD`, which defaults to `0.75`.
-6. Result is recorded as `ALLOWED` or `DENIED`, with ENTRY/EXIT taken from the worker's fixed camera role. Browser/upload tests have no direction. An allowed attempt indicates recognition approval, not proof that someone physically passed the door.
+6. Result is recorded as `ALLOWED` or `DENIED`, with ENTRY/EXIT taken from the worker's fixed camera role in non-debug mode or the selected browser role in debug mode. An allowed attempt indicates recognition approval, not proof that someone physically passed the door.
 
 Adding direction migrates the database automatically and preserves existing users and logs. Existing rows keep an unspecified direction. No database reset is needed for this update. Cooldowns are independent per camera; a palm left in view can produce another attempt after the next hold/cooldown cycle.
 

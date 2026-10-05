@@ -168,9 +168,10 @@ body {
 ────────────────────────────────────────── */
 .panel-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  align-items: start;
   gap: 1.5rem;
-  max-width: 1000px;
+  max-width: 1200px;
   margin: 0 auto;
 }
 
@@ -196,7 +197,18 @@ body {
   transform: scaleX(-1);
 }
 
-.exit-camera { margin-top: 1rem; }
+.camera-previews {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+.camera-preview-empty {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: oklch(100% 0 0 / 0.85);
+  font-size: 0.875rem;
+}
 
 /* Landmark overlay canvas */
 .overlay-canvas {
@@ -291,6 +303,8 @@ body {
   flex-shrink: 0;
 }
 
+.cam-dot.paused { background: oklch(75% 0 0); }
+
 /* Brightness quality indicator */
 .brightness-badge {
   position: absolute;
@@ -380,7 +394,6 @@ body {
 
 /* Device status card */
 .device-status-card {
-  margin-top: 12px;
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -411,6 +424,28 @@ body {
   gap: 8px;
   margin-top: 10px;
 }
+
+.scan-direction-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--text-2);
+  font-size: 0.85rem;
+}
+
+.scan-direction-controls > span { flex: 1; }
+.scan-direction-controls .btn { width: auto; margin-top: 0; }
+.scan-direction-controls button[aria-pressed="true"] {
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+.scan-direction-controls button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.scan-direction-controls button:disabled { cursor: not-allowed; opacity: 0.7; }
 
 /* Both buttons share equal width — symmetric layout */
 .scan-controls > button {
@@ -536,7 +571,7 @@ body {
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   flex: 1;
-  min-height: 300px;
+  min-height: 240px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1328,6 +1363,7 @@ body {
 }
 
 @media (max-width: 420px) {
+  .camera-previews { grid-template-columns: 1fr; }
   .stat-label { font-size: 0.55rem; }
   .nav-btn span { display: none; }
   .register-actions { flex-direction: column; }

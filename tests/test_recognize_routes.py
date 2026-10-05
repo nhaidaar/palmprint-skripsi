@@ -1,9 +1,11 @@
 import asyncio
 import base64
 import logging
+from contextlib import closing
 
 import cv2
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -14,6 +16,41 @@ def encoded_image():
     ok, data = cv2.imencode(".jpg", frame)
     assert ok
     return "data:image/jpeg;base64," + base64.b64encode(data.tobytes()).decode("ascii")
+
+
+@pytest.mark.parametrize(("debug", "direction", "expected"), [
+    (True, "ENTRY", "ENTRY"), (True, "EXIT", "EXIT"), (False, "EXIT", None),
+])
+def test_browser_direction_is_recorded_only_for_debug_inputs(tmp_path, monkeypatch, debug, direction, expected):
+    import app.main as main
+    import app.routes.recognize as recognize_route
+    from app.database import Database
+
+    class Processor:
+        def extract_embedding_from_frame(self, frame):
+            return np.ones(4), None
+
+        def compute_similarity(self, embedding, stored, threshold):
+            return {"status": "ALLOWED", "name": "Alice", "similarity": 0.95,
+                    "user_id": user_id, "closest_match": "Alice"}
+
+    with closing(Database(tmp_path / "access.db")) as db:
+        user_id = db.add_user("Alice", np.ones(4), nim="A001")
+        monkeypatch.setattr(main, "db", db)
+        monkeypatch.setattr(main, "palm_processor", Processor())
+        monkeypatch.setattr(recognize_route, "APP_DEBUG", debug)
+        client = TestClient(app)
+        response = client.post("/api/recognize", json={"image": encoded_image(), "direction": direction})
+        assert response.status_code == 200
+        assert response.json()["direction"] == expected
+        logs = client.get("/api/logs").json()
+        assert [(row["direction"], row["status"]) for row in logs] == [(expected, "ALLOWED")]
+
+
+def test_browser_scan_rejects_invalid_direction():
+    response = TestClient(app).post("/api/recognize", json={"image": encoded_image(), "direction": "SIDE"})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "direction"]
 
 
 def test_encode_roi_image_logs_warning_when_imencode_fails(monkeypatch, caplog):

@@ -67,6 +67,8 @@ export function ScanPanel({ active }: ScanPanelProps) {
   const busyRef = useRef(false)
   const [usbDeviceMode, setUsbDeviceMode] = useState(false)
   const [devFeatures, setDevFeatures] = useState(false)
+  const [direction, setDirection] = useState<'ENTRY' | 'EXIT'>('ENTRY')
+  const [lastFrames, setLastFrames] = useState<Record<'ENTRY' | 'EXIT', string | null>>({ ENTRY: null, EXIT: null })
   const [autoMode, setAutoMode] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -77,6 +79,9 @@ export function ScanPanel({ active }: ScanPanelProps) {
   const [stats, setStats] = useState({ total: 0, allowed: 0, denied: 0, users: 0 })
   const [appVersion, setAppVersion] = useState('local')
   const [devices, setDevices] = useState<Record<string, { camera_connected?: number; last_error?: string }>>({})
+  const inactiveDirection = direction === 'ENTRY' ? 'EXIT' : 'ENTRY'
+  const activeLabel = usbDeviceMode || direction === 'ENTRY' ? 'Entry' : 'Exit'
+  const inactiveLabel = usbDeviceMode || inactiveDirection === 'EXIT' ? 'Exit' : 'Entry'
 
   autoModeRef.current = autoMode
   busyRef.current = busy
@@ -205,7 +210,7 @@ export function ScanPanel({ active }: ScanPanelProps) {
     setScanStartedAt(started)
     const data = await apiJson<RecognizeResult>('/api/recognize', {
       method: 'POST',
-      body: JSON.stringify({ image, is_roi: false, debug_roi: devFeatures, source }),
+      body: JSON.stringify({ image, is_roi: false, debug_roi: devFeatures, source, direction }),
     })
     setRoiImage(data.roi_image ?? '')
     setResult(data)
@@ -235,6 +240,25 @@ export function ScanPanel({ active }: ScanPanelProps) {
 
   triggerScanRef.current = () => { void triggerScan() }
 
+  function selectDirection(next: 'ENTRY' | 'EXIT') {
+    if (next === direction) return
+    let snapshot: string | null = null
+    try {
+      if (videoRef.current && videoRef.current.readyState >= 2) {
+        snapshot = `data:image/jpeg;base64,${captureFrame(videoRef.current)}`
+      }
+    } catch {
+      // Keep the inactive preview blank if the camera cannot provide a frame.
+    }
+    setLastFrames((current) => ({ ...current, [direction]: snapshot }))
+    setDirection(next)
+    holdStartRef.current = null
+    setResult(null)
+    setRoiImage('')
+    setError('')
+    setScanStartedAt(null)
+  }
+
   async function handleScanUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     event.target.value = ''
@@ -263,38 +287,62 @@ export function ScanPanel({ active }: ScanPanelProps) {
     <section className={`panel${active ? ' active' : ''}`} id="panel-scan">
       <div className="panel-grid">
         <div className="camera-col">
-          <div className={`camera-frame${guidance.includes('detected') ? ' hand-detected' : ''}`} id="cameraFrame">
-            {usbDeviceMode ? (
-              <img id="usbPreview" className="usb-preview" src={`${USB_PREVIEW_STREAM_URL}?direction=ENTRY`} alt="Entry camera preview" />
-            ) : (
-              <video ref={videoRef} id="video" autoPlay playsInline muted />
-            )}
-            <canvas ref={overlayRef} id="overlayCanvas" className="overlay-canvas" />
-            <canvas ref={canvasRef} id="canvas" style={{ display: 'none' }} />
-            <div className="autoscan-ring" id="autoscanRing" style={{ display: !usbDeviceMode && autoMode && !busy ? undefined : 'none' }}>
-              <svg viewBox="0 0 100 100" className="ring-svg" aria-hidden="true">
-                <circle className="ring-track" cx="50" cy="50" r="42" />
-                <circle className="ring-fill" cx="50" cy="50" r="42" id="ringFill" />
-              </svg>
-              <span className="ring-label" id="ringLabel">Hold</span>
+          <div className="camera-previews">
+            <div className={`camera-frame${guidance.includes('detected') ? ' hand-detected' : ''}`} id="cameraFrame"
+              role="group" aria-label={`${activeLabel} camera preview`}
+              style={{ order: usbDeviceMode || direction === 'ENTRY' ? 0 : 1 }}>
+              {usbDeviceMode ? (
+                <img id="usbPreview" className="usb-preview" src={`${USB_PREVIEW_STREAM_URL}?direction=ENTRY`} alt="Entry camera preview" />
+              ) : (
+                <video ref={videoRef} id="video" autoPlay playsInline muted />
+              )}
+              <canvas ref={overlayRef} id="overlayCanvas" className="overlay-canvas" />
+              <canvas ref={canvasRef} id="canvas" style={{ display: 'none' }} />
+              <div className="autoscan-ring" id="autoscanRing" style={{ display: !usbDeviceMode && autoMode && !busy ? undefined : 'none' }}>
+                <svg viewBox="0 0 100 100" className="ring-svg" aria-hidden="true">
+                  <circle className="ring-track" cx="50" cy="50" r="42" />
+                  <circle className="ring-fill" cx="50" cy="50" r="42" id="ringFill" />
+                </svg>
+                <span className="ring-label" id="ringLabel">Hold</span>
+              </div>
+              <div className="palm-guide" id="palmGuide">
+                <div className="guide-ring outer" />
+                <div className="guide-ring inner" />
+                <div className="guide-label" id="guideLabel">Place palm here</div>
+              </div>
+              <div className="capture-flash" id="captureFlash" />
+              <div className="brightness-badge" id="brightnessBadge" style={{ display: 'none' }} />
+              <div className="camera-status" id="cameraStatus">
+                <span className="cam-dot" />
+                {usbDeviceMode ? 'Entry camera' : `${activeLabel} · ${error && !streamRef.current ? 'Camera offline' : 'Live'}`}
+              </div>
             </div>
-            <div className="palm-guide" id="palmGuide">
-              <div className="guide-ring outer" />
-              <div className="guide-ring inner" />
-              <div className="guide-label" id="guideLabel">Place palm here</div>
-            </div>
-            <div className="capture-flash" id="captureFlash" />
-            <div className="brightness-badge" id="brightnessBadge" style={{ display: 'none' }} />
-            <div className="camera-status" id="cameraStatus">
-              <span className="cam-dot" />
-              {usbDeviceMode ? 'Entry camera' : error ? 'Camera offline' : 'Camera ready'}
+
+            <div className="camera-frame" role="group" aria-label={`${inactiveLabel} camera preview`}
+              style={{ order: usbDeviceMode || inactiveDirection === 'EXIT' ? 1 : 0 }}>
+              {usbDeviceMode ? (
+                <img className="usb-preview" src={`${USB_PREVIEW_STREAM_URL}?direction=EXIT`} alt="Exit camera preview" />
+              ) : lastFrames[inactiveDirection] ? (
+                <img className="usb-preview" src={lastFrames[inactiveDirection]!} alt={`${inactiveLabel} last frame preview`} />
+              ) : (
+                <div className="camera-preview-empty">Select {inactiveLabel} to preview</div>
+              )}
+              <div className="camera-status">
+                <span className={`cam-dot${usbDeviceMode ? '' : ' paused'}`} />
+                {usbDeviceMode ? 'Exit camera' : `${inactiveLabel} · ${lastFrames[inactiveDirection] ? 'Last frame' : 'Waiting'}`}
+              </div>
             </div>
           </div>
-
-          {usbDeviceMode && (
-            <div className="camera-frame exit-camera">
-              <img className="usb-preview" src={`${USB_PREVIEW_STREAM_URL}?direction=EXIT`} alt="Exit camera preview" />
-              <div className="camera-status"><span className="cam-dot" />Exit camera</div>
+          {!usbDeviceMode && devFeatures && (
+            <div className="scan-direction-controls" role="group" aria-label="Browser camera direction">
+              <span>Debug input</span>
+              {(['ENTRY', 'EXIT'] as const).map((role) => (
+                <button className="btn btn-mode" type="button" key={role}
+                  aria-pressed={direction === role} disabled={busy}
+                  onClick={() => selectDirection(role)}>
+                  {role === 'ENTRY' ? 'Entry' : 'Exit'}
+                </button>
+              ))}
             </div>
           )}
           <div className="scan-controls">
@@ -356,7 +404,7 @@ export function ScanPanel({ active }: ScanPanelProps) {
                 </div>
                 <div className="roi-preview dev-only" id="roiPreview" hidden={!devFeatures || !roiImage}>
                   <div className="roi-preview-label">ROI used for embedding</div>
-                  <img id="roiPreviewImage" src={roiImage} alt="Processed palm ROI used for recognition" />
+                  <img id="roiPreviewImage" src={roiImage || undefined} alt="Processed palm ROI used for recognition" />
                 </div>
               </div>
             )}
@@ -370,6 +418,8 @@ export function ScanPanel({ active }: ScanPanelProps) {
 
           <div className="device-status-card" id="deviceStatusCard">
             <div className="device-status-row"><span>Version</span><strong id="appVersion">{appVersion}</strong></div>
+            <div className="device-status-row"><span>Mode</span><strong>{usbDeviceMode ? 'Non-debug · USB' : 'Debug · Browser'}</strong></div>
+            {devFeatures && <div className="device-status-row"><span>GPIO</span><strong>Disabled in debug</strong></div>}
             <div className="device-status-row"><span>Worker</span><strong id="deviceWorkerState">{usbDeviceMode ? 'enabled' : 'disabled'}</strong></div>
             {usbDeviceMode ? ['ENTRY', 'EXIT'].map((direction) => (
               <div className="device-status-row" key={direction}>

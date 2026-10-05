@@ -10,6 +10,21 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def test_debug_defaults_to_browser_without_gpio_even_with_legacy_usb_flags():
+    env = os.environ.copy()
+    env.pop("APP_DEBUG", None)
+    env.update(PALMGATE_SKIP_DOTENV="1", CAMERA_SOURCE="usb",
+               DEVICE_RUNTIME_ENABLED="1", LOCK_GPIO_ENABLED="1", APP_ENV="production")
+    result = subprocess.run(
+        [sys.executable, "-c", "import app.config as c; import json; "
+         "print(json.dumps([c.APP_DEBUG, c.CAMERA_SOURCE, c.DEVICE_RUNTIME_ENABLED, "
+         "c.LOCK_GPIO_ENABLED, c.DEV_FEATURES_ENABLED]))"],
+        cwd=PROJECT_ROOT, env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [True, "browser", False, False, True]
+
+
 @pytest.fixture(autouse=True)
 def skip_project_dotenv(monkeypatch):
     monkeypatch.setenv("PALMGATE_SKIP_DOTENV", "1")
@@ -48,8 +63,9 @@ def import_config_with_duplicate_threshold(raw_value: str | None, similarity: st
 
 
 def test_device_runtime_env_overrides(monkeypatch):
-    monkeypatch.setenv("DEVICE_RUNTIME_ENABLED", "1")
-    monkeypatch.setenv("CAMERA_SOURCE", "usb")
+    monkeypatch.setenv("APP_DEBUG", "false")
+    monkeypatch.setenv("DEVICE_RUNTIME_ENABLED", "0")
+    monkeypatch.setenv("CAMERA_SOURCE", "browser")
     monkeypatch.setenv("CAMERA_DEVICE_PATH", "/dev/video0")
     monkeypatch.setenv("APP_HOST", "0.0.0.0")
 
@@ -79,6 +95,7 @@ def test_notebook_runtime_config_is_removed():
 
 
 def test_lock_gpio_env_defaults_and_overrides(monkeypatch):
+    monkeypatch.setenv("APP_DEBUG", "false")
     monkeypatch.setenv("LOCK_GPIO_ENABLED", "1")
     monkeypatch.setenv("LOCK_GPIO_CHIP", "/dev/gpiochip2")
     monkeypatch.setenv("LOCK_GPIO_LINE", "42")
@@ -229,31 +246,29 @@ def test_historical_final_model_metadata_matches_export_contract():
     assert metadata["operating_threshold"] == pytest.approx(0.7736719250679016)
 
 
-def test_app_env_defaults_to_production(monkeypatch):
-    monkeypatch.delenv("APP_ENV", raising=False)
+@pytest.mark.parametrize(("debug", "gpio", "expected"), [
+    ("true", "1", [True, "browser", False, False, "development", True]),
+    ("FALSE", "1", [False, "usb", True, True, "production", False]),
+    ("false", "0", [False, "usb", True, False, "production", False]),
+    ("1", "1", [True, "browser", False, False, "development", True]),
+    ("0", "0", [False, "usb", True, False, "production", False]),
+])
+def test_app_debug_controls_mode_and_gpio_opt_in(debug, gpio, expected):
+    env = {**os.environ, "PALMGATE_SKIP_DOTENV": "1", "APP_DEBUG": debug,
+           "LOCK_GPIO_ENABLED": gpio, "APP_ENV": "development"}
+    result = subprocess.run(
+        [sys.executable, "-c", "import app.config as c; import json; "
+         "print(json.dumps([c.APP_DEBUG, c.CAMERA_SOURCE, c.DEVICE_RUNTIME_ENABLED, "
+         "c.LOCK_GPIO_ENABLED, c.APP_ENV, c.DEV_FEATURES_ENABLED]))"],
+        cwd=PROJECT_ROOT, env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == expected
 
-    import app.config as config
-    importlib.reload(config)
 
-    assert config.APP_ENV == "production"
-    assert config.DEV_FEATURES_ENABLED is False
-
-
-def test_app_env_development_enables_dev_features(monkeypatch):
-    monkeypatch.setenv("APP_ENV", "development")
-
-    import app.config as config
-    importlib.reload(config)
-
-    assert config.APP_ENV == "development"
-    assert config.DEV_FEATURES_ENABLED is True
-
-
-def test_invalid_app_env_falls_back_to_production(monkeypatch):
-    monkeypatch.setenv("APP_ENV", "local")
-
-    import app.config as config
-    importlib.reload(config)
-
-    assert config.APP_ENV == "production"
-    assert config.DEV_FEATURES_ENABLED is False
+def test_invalid_app_debug_rejects_ambiguous_mode():
+    env = {**os.environ, "PALMGATE_SKIP_DOTENV": "1", "APP_DEBUG": "tru"}
+    result = subprocess.run([sys.executable, "-c", "import app.config"],
+                            cwd=PROJECT_ROOT, env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "APP_DEBUG must be true or false" in result.stderr

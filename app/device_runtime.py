@@ -549,7 +549,11 @@ def build_device_runtime(palm_processor, db, direction="ENTRY", lock_controller=
 
 
 if __name__ == "__main__":
-    from app.config import DB_PATH
+    from app.config import APP_DEBUG, DB_PATH
+
+    if APP_DEBUG:
+        raise SystemExit("USB workers require APP_DEBUG=false; debug mode uses the browser camera.")
+
     from app.database import Database
     from app.palm_processor import PalmProcessor
 
