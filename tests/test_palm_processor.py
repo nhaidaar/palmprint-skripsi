@@ -3,6 +3,7 @@ import threading
 import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from queue import Queue
 from types import SimpleNamespace
 
 import cv2
@@ -21,6 +22,12 @@ def processor(monkeypatch):
     instance._load_model = load_model.__get__(instance, PalmProcessor)
     yield instance
     instance.close()
+
+
+def install_interpreters(processor, *interpreters):
+    processor._interpreters = Queue(maxsize=len(interpreters))
+    for interpreter in interpreters:
+        processor._interpreters.put((interpreter, 1, 2))
 
 
 def test_extract_palm_roi_no_hand(processor):
@@ -107,63 +114,87 @@ def test_extract_embedding_from_roi_preprocesses_without_client_rotation(process
     assert result == (embedding, model_input)
 
 
-def test_extract_embedding_from_roi_serializes_tta_transactions(processor, monkeypatch):
+@pytest.mark.parametrize("sources", [("frame", "frame"), ("frame", "roi"), ("roi", "roi")])
+def test_concurrent_extraction_keeps_independent_three_rotation_embeddings(processor, monkeypatch, tmp_path, sources):
     first_invoke = threading.Event()
     release_first = threading.Event()
-    second_attempted = threading.Event()
     second_invoked = threading.Event()
     invoke_markers = []
     marker_lock = threading.Lock()
+    blocking = False
 
     class CoordinatedInterpreter:
-        def __init__(self):
+        def __init__(self, model_path, num_threads=None):
             self.marker = 0
+            self.owner = None
+
+        def allocate_tensors(self):
+            pass
+
+        def get_input_details(self):
+            return [{"index": 1, "shape": np.array([1, 224, 224, 3]), "dtype": np.float32}]
+
+        def get_output_details(self):
+            return [{"index": 2, "shape": np.array([1, 128]), "dtype": np.float32}]
 
         def set_tensor(self, index, value):
+            assert self.owner is None, "Interpreter was shared during an inference"
+            self.owner = threading.get_ident()
             self.marker = int(np.max(value))
 
         def invoke(self):
             with marker_lock:
                 invoke_markers.append(self.marker)
-                invoke_number = len(invoke_markers)
-            if self.marker == 2:
-                second_invoked.set()
-            if invoke_number == 1:
-                first_invoke.set()
-                release_first.wait(timeout=1.0)
+                first = blocking and not first_invoke.is_set()
+                if first:
+                    first_invoke.set()
+                elif blocking:
+                    second_invoked.set()
+            if first:
+                release_first.wait(timeout=2.0)
 
         def get_tensor(self, index):
-            return np.full((1, 128), float(self.marker), dtype=np.float32)
+            assert self.owner == threading.get_ident()
+            output = np.zeros((1, 128), dtype=np.float32)
+            output[0, :2] = [self.marker, 255 - self.marker]
+            self.owner = None
+            return output
 
-    def fake_preprocess(roi):
-        return np.full((224, 224, 3), float(roi[0, 0, 0]), dtype=np.float32)
+    class Landmarker:
+        def detect(self, image):
+            return SimpleNamespace(hand_landmarks=[fake_landmarks({
+                0: (0.50, 0.80), 5: (0.35, 0.45), 9: (0.50, 0.42), 17: (0.65, 0.45),
+            })])
 
-    def run_second():
-        second_attempted.set()
-        return processor.extract_embedding_from_roi(
-            np.full((20, 20, 3), 2, dtype=np.uint8)
-        )
+        def close(self):
+            pass
 
-    processor.interpreter = CoordinatedInterpreter()
-    processor._input_index = 1
-    processor._output_index = 2
-    monkeypatch.setattr(processor, "preprocess_roi", fake_preprocess)
+    model_path = tmp_path / "model.tflite"
+    model_path.write_bytes(b"test")
+    install_fake_tflite_module(monkeypatch, CoordinatedInterpreter)
+    processor._load_model(model_path)
+    processor._hand_landmarker = Landmarker()
+    samples = [np.full((100, 200, 3), value, dtype=np.uint8) for value in (64, 192)]
+    extractors = [getattr(processor, f"extract_embedding_from_{source}") for source in sources]
+    expected = [extract(sample)[0] for extract, sample in zip(extractors, samples)]
+    assert not np.allclose(expected[0], expected[1])
+    invoke_markers.clear()
+    blocking = True
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(
-            processor.extract_embedding_from_roi,
-            np.full((20, 20, 3), 1, dtype=np.uint8),
-        )
+        first = executor.submit(extractors[0], samples[0])
         assert first_invoke.wait(timeout=1.0)
-        second = executor.submit(run_second)
-        assert second_attempted.wait(timeout=1.0)
-        interleaved = second_invoked.wait(timeout=0.2)
+        second = executor.submit(extractors[1], samples[1])
+        concurrent = second_invoked.wait(timeout=0.5)
         release_first.set()
-        first.result(timeout=1.0)
-        second.result(timeout=1.0)
+        results = [first.result(timeout=2.0)[0], second.result(timeout=2.0)[0]]
 
-    assert interleaved is False
-    assert invoke_markers == [1, 1, 1, 2, 2, 2]
+    assert concurrent, "Second camera inference waited for the first camera"
+    assert len(invoke_markers) == 6
+    assert all(invoke_markers.count(marker) == 3 for marker in set(invoke_markers))
+    for result, baseline in zip(results, expected):
+        np.testing.assert_allclose(result, baseline)
+        assert np.linalg.norm(result) == pytest.approx(1.0)
 
 
 def test_extract_palm_roi_serializes_landmarker_detection(processor):
@@ -238,9 +269,8 @@ def test_infer_embedding_runs_three_rotations_and_normalizes(processor, monkeypa
         angles.append(angle)
         return value
 
-    processor.interpreter = FakeInterpreter()
-    processor._input_index = 1
-    processor._output_index = 2
+    interpreter = FakeInterpreter()
+    install_interpreters(processor, interpreter)
     monkeypatch.setattr(processor, "_rotate_model_input", fake_rotate)
 
     result = processor._infer_embedding(model_input)
@@ -248,7 +278,7 @@ def test_infer_embedding_runs_three_rotations_and_normalizes(processor, monkeypa
     expected = processor._normalize_embedding(np.mean(normalized_outputs, axis=0))
 
     assert angles == [0.0, -6.0, 6.0]
-    assert processor.interpreter.invoke_count == 3
+    assert interpreter.invoke_count == 3
     assert result == pytest.approx(expected)
     assert np.linalg.norm(result) == pytest.approx(1.0)
 
@@ -287,9 +317,8 @@ def test_infer_embedding_rejects_non_128_output(processor, output_size):
         def get_tensor(self, index):
             return np.ones((1, output_size), dtype=np.float32)
 
-    processor.interpreter = FakeInterpreter()
-    processor._input_index = 1
-    processor._output_index = 2
+    interpreter = FakeInterpreter()
+    install_interpreters(processor, interpreter)
 
     with pytest.raises(ValueError, match="128"):
         processor._infer_embedding(np.zeros((224, 224, 3), dtype=np.float32))
@@ -314,12 +343,48 @@ def test_infer_embedding_rejects_invalid_model_output(processor, output):
         def get_tensor(self, index):
             return output[None, :]
 
-    processor.interpreter = FakeInterpreter()
-    processor._input_index = 1
-    processor._output_index = 2
+    interpreter = FakeInterpreter()
+    install_interpreters(processor, interpreter)
 
     with pytest.raises(ValueError, match="finite non-zero"):
         processor._infer_embedding(np.zeros((224, 224, 3), dtype=np.float32))
+
+
+@pytest.mark.parametrize("failure", ["invoke", "invalid_output"])
+def test_extraction_recovers_after_interpreter_error(processor, failure):
+    class OnceFailingInterpreter:
+        failed = False
+
+        def set_tensor(self, index, value):
+            pass
+
+        def invoke(self):
+            if failure == "invoke" and not self.failed:
+                self.failed = True
+                raise RuntimeError("inference failed")
+
+        def get_tensor(self, index):
+            if not self.failed:
+                self.failed = True
+                return np.zeros((1, 128), dtype=np.float32)
+            return np.ones((1, 128), dtype=np.float32)
+
+    install_interpreters(processor, OnceFailingInterpreter())
+    roi = np.full((100, 100, 3), 120, dtype=np.uint8)
+    with pytest.raises((RuntimeError, ValueError)):
+        processor.extract_embedding_from_roi(roi)
+
+    results = []
+
+    def retry():
+        results.append(processor.extract_embedding_from_roi(roi)[0])
+
+    thread = threading.Thread(target=retry, daemon=True)
+    thread.start()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive(), "Failed inference did not return the interpreter"
+    assert len(results) == 1
+    np.testing.assert_allclose(results[0], np.full(128, 1 / np.sqrt(128)), rtol=1e-6)
 
 
 def test_old_embedding_api_is_removed(processor):
@@ -552,7 +617,7 @@ def test_interpreter_load_failure_is_wrapped(processor, monkeypatch, tmp_path):
     assert exc_info.value.__cause__ is sentinel
 
 
-def test_model_loader_requests_four_threads(processor, monkeypatch, tmp_path):
+def test_model_loader_creates_two_interpreters_with_two_threads_each(processor, monkeypatch, tmp_path):
     model_path = tmp_path / "model.tflite"
     model_path.write_bytes(b"test")
     thread_values = []
@@ -574,7 +639,7 @@ def test_model_loader_requests_four_threads(processor, monkeypatch, tmp_path):
 
     processor._load_model(model_path)
 
-    assert thread_values == [4]
+    assert thread_values == [2, 2]
 
 
 def test_model_loader_retries_without_thread_argument(processor, monkeypatch, tmp_path):
@@ -601,7 +666,7 @@ def test_model_loader_retries_without_thread_argument(processor, monkeypatch, tm
 
     processor._load_model(model_path)
 
-    assert thread_values == [4, None]
+    assert thread_values == [2, None, 2, None]
 
 
 def test_model_output_metadata_rejects_non_128_shape(processor, monkeypatch, tmp_path):

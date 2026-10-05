@@ -307,10 +307,10 @@ USB registration captures 5 samples per hand, averages each hand into a normaliz
 
 > **Historical preprocessing change** — embeddings generated before the existing preprocessing pipeline changed are **not compatible** with the current version. This is separate from the automatic ENTRY/EXIT migration above.
 >
-> Stop PalmGate, remove the old database, and re-register users. For a local process:
+> Stop PalmGate, remove the old database, and re-register users. `DB_PATH` can override the default `palmprint.db` location. Run this from the project root with the same `.env` and process environment as the deployment to remove its configured database:
 >
 > ```bash
-> rm palmprint.db
+> python -c 'from app.config import DB_PATH; print(f"Removing {DB_PATH.resolve()}"); DB_PATH.unlink()'
 > ```
 >
 > Docker Compose stores `/data/palmprint.db` in a named volume, so a host-side `rm palmprint.db` does not reset it. To remove the Compose database:

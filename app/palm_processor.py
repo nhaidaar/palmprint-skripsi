@@ -1,6 +1,7 @@
 import logging
 import threading
 from pathlib import Path
+from queue import Queue
 
 import cv2
 import numpy as np
@@ -44,11 +45,10 @@ class PalmProcessor:
         self.clahe = cv2.createCLAHE(
             clipLimit=CLAHE_CLIP_LIMIT, tileGridSize=CLAHE_TILE_GRID
         )
-        self.interpreter = None
-        self._input_index = None
-        self._output_index = None
+        self._interpreters = None
         self._hand_landmarker = None
-        self._operation_lock = threading.RLock()
+        self._hand_lock = threading.Lock()
+        self._clahe_lock = threading.Lock()
 
         if hand_model_path is not None:
             self._load_hand_model(hand_model_path)
@@ -66,6 +66,14 @@ class PalmProcessor:
         self._hand_landmarker = mp_vision.HandLandmarker.create_from_options(options)
 
     def _load_model(self, model_path: Path):
+        # Two camera workers share a bounded pool; each TTA request leases one interpreter.
+        interpreters = [self._create_interpreter(model_path) for _ in range(2)]
+        pool = Queue(maxsize=2)
+        for interpreter in interpreters:
+            pool.put(interpreter)
+        self._interpreters = pool
+
+    def _create_interpreter(self, model_path: Path):
         if not model_path.is_file():
             raise FileNotFoundError(f"Model file not found: {model_path}")
 
@@ -78,7 +86,7 @@ class PalmProcessor:
                 Interpreter = tf.lite.Interpreter
 
             try:
-                interpreter = Interpreter(model_path=str(model_path), num_threads=4)
+                interpreter = Interpreter(model_path=str(model_path), num_threads=2)
             except TypeError:
                 interpreter = Interpreter(model_path=str(model_path))
             interpreter.allocate_tensors()
@@ -110,10 +118,10 @@ class PalmProcessor:
                 f"got {np.dtype(output_details[0]['dtype']).name}"
             )
 
-        self.interpreter = interpreter
-        self._input_index = input_details[0]["index"]
-        self._output_index = output_details[0]["index"]
-        log.info("MODEL | embedding output index=%d dim=%d", self._output_index, EMBEDDING_DIM)
+        input_index = input_details[0]["index"]
+        output_index = output_details[0]["index"]
+        log.info("MODEL | embedding output index=%d dim=%d", output_index, EMBEDDING_DIM)
+        return interpreter, input_index, output_index
 
     def extract_palm_roi(self, frame_rgb: np.ndarray):
         if self._hand_landmarker is None:
@@ -133,7 +141,7 @@ class PalmProcessor:
             return None
 
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-        with self._operation_lock:
+        with self._hand_lock:
             result = self._hand_landmarker.detect(mp_image)
 
         if not result.hand_landmarks:
@@ -210,7 +218,8 @@ class PalmProcessor:
         return roi
 
     def apply_clahe(self, gray_img: np.ndarray) -> np.ndarray:
-        return self.clahe.apply(gray_img)
+        with self._clahe_lock:
+            return self.clahe.apply(gray_img)
 
     def preprocess_roi(self, roi: np.ndarray) -> np.ndarray:
         gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
@@ -223,53 +232,55 @@ class PalmProcessor:
     def extract_embedding_from_frame(
         self, frame_rgb: np.ndarray
     ) -> tuple[np.ndarray | None, np.ndarray | None]:
-        with self._operation_lock:
-            roi = self.extract_palm_roi(frame_rgb)
-            if roi is None:
-                return None, None
+        roi = self.extract_palm_roi(frame_rgb)
+        if roi is None:
+            return None, None
 
-            model_input = self.preprocess_roi(roi)
-            return self._infer_embedding(model_input), model_input
+        model_input = self.preprocess_roi(roi)
+        return self._infer_embedding(model_input), model_input
 
     def extract_embedding_from_roi(
         self, roi_rgb: np.ndarray
     ) -> tuple[np.ndarray | None, np.ndarray | None]:
-        with self._operation_lock:
-            if roi_rgb is None or roi_rgb.size == 0:
-                return None, None
+        if roi_rgb is None or roi_rgb.size == 0:
+            return None, None
 
-            model_input = self.preprocess_roi(roi_rgb)
-            return self._infer_embedding(model_input), model_input
+        model_input = self.preprocess_roi(roi_rgb)
+        return self._infer_embedding(model_input), model_input
 
     def _infer_embedding(self, model_input: np.ndarray) -> np.ndarray:
-        if self.interpreter is None:
+        pool = self._interpreters
+        if pool is None:
             raise RuntimeError("TFLite model not loaded")
-        if self._input_index is None or self._output_index is None:
-            raise RuntimeError("TFLite tensor indices are not initialized")
 
         embeddings = []
-        for angle in TTA_ROTATIONS:
-            rotated_input = self._rotate_model_input(model_input, angle)
-            input_data = np.expand_dims(rotated_input.astype(np.float32), axis=0)
-            self.interpreter.set_tensor(self._input_index, input_data)
-            self.interpreter.invoke()
-            output = np.asarray(
-                self.interpreter.get_tensor(self._output_index), dtype=np.float32
-            ).reshape(-1)
+        lease = pool.get()
+        interpreter, input_index, output_index = lease
+        try:
+            for angle in TTA_ROTATIONS:
+                rotated_input = self._rotate_model_input(model_input, angle)
+                input_data = np.expand_dims(rotated_input.astype(np.float32), axis=0)
+                interpreter.set_tensor(input_index, input_data)
+                interpreter.invoke()
+                output = np.asarray(
+                    interpreter.get_tensor(output_index), dtype=np.float32
+                ).reshape(-1)
 
-            if output.size != EMBEDDING_DIM:
-                raise ValueError(
-                    f"Embedding model must output exactly {EMBEDDING_DIM} values, got {output.size}"
-                )
-            output_norm = float(np.linalg.norm(output))
-            if (
-                not np.all(np.isfinite(output))
-                or not np.isfinite(output_norm)
-                or output_norm <= np.finfo(np.float32).eps
-            ):
-                raise ValueError("Embedding model output must be finite non-zero values")
+                if output.size != EMBEDDING_DIM:
+                    raise ValueError(
+                        f"Embedding model must output exactly {EMBEDDING_DIM} values, got {output.size}"
+                    )
+                output_norm = float(np.linalg.norm(output))
+                if (
+                    not np.all(np.isfinite(output))
+                    or not np.isfinite(output_norm)
+                    or output_norm <= np.finfo(np.float32).eps
+                ):
+                    raise ValueError("Embedding model output must be finite non-zero values")
 
-            embeddings.append(self._normalize_embedding(output))
+                embeddings.append(self._normalize_embedding(output))
+        finally:
+            pool.put(lease)
 
         mean_embedding = np.mean(embeddings, axis=0)
         mean_norm = float(np.linalg.norm(mean_embedding))
@@ -297,7 +308,7 @@ class PalmProcessor:
             return base
 
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-        with self._operation_lock:
+        with self._hand_lock:
             result = self._hand_landmarker.detect(mp_image)
         if not result.hand_landmarks:
             return base
@@ -427,5 +438,6 @@ class PalmProcessor:
         }
 
     def close(self):
+        self._interpreters = None
         if self._hand_landmarker is not None:
             self._hand_landmarker.close()
