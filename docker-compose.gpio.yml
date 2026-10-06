@@ -1,0 +1,7 @@
+# Optional relay access: include alongside docker-compose.yml on the Orange Pi.
+services:
+  palmgate-api-usb:
+    environment:
+      - LOCK_GPIO_ENABLED=1
+    devices:
+      - ${LOCK_GPIO_CHIP:-/dev/gpiochip0}:${LOCK_GPIO_CHIP:-/dev/gpiochip0}

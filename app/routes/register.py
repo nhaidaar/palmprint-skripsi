@@ -9,13 +9,12 @@ from pydantic import BaseModel
 from app.config import (
     DEV_FEATURES_ENABLED,
     DUPLICATE_THRESHOLD,
-    ENROLLMENT_TTA_ENABLED,
     REGISTRATION_CAPTURES_PER_HAND,
     REGISTRATION_HANDS,
     REGISTRATION_MIN_VALID_PER_HAND,
 )
 from app.routes.recognize import decode_base64_image
-from app.services.embedding_templates import build_hand_templates, overall_template
+from app.services.embedding_templates import build_hand_templates, build_overall_template
 
 router = APIRouter()
 
@@ -81,13 +80,9 @@ async def register(req: RegisterRequest):
         cv2.imwrite(os.path.join(save_dir, f"{hands[i]}_{i}.jpg"), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
         if req.is_roi:
-            emb = palm_processor.get_embedding_from_roi(
-                frame,
-                req.rotation_angle,
-                tta_enabled=ENROLLMENT_TTA_ENABLED,
-            )
+            emb, _ = palm_processor.extract_embedding_from_roi(frame)
         else:
-            emb = palm_processor.get_embedding(frame, tta_enabled=ENROLLMENT_TTA_ENABLED)
+            emb, _ = palm_processor.extract_embedding_from_frame(frame)
 
         if emb is None:
             raise HTTPException(
@@ -107,23 +102,27 @@ async def register(req: RegisterRequest):
 
     template_hands = list(templates.keys())
     template_embeddings = [templates[hand] for hand in template_hands]
-    raw_embeddings = []
-    raw_embedding_hands = []
+    individual_embeddings = []
+    individual_embedding_hands = []
     for hand in selected_hands:
         for sample in samples:
             if sample["hand"] == hand:
-                raw_embeddings.append(sample["embedding"])
-                raw_embedding_hands.append(hand)
-    avg_embedding = overall_template(templates)
+                individual_embeddings.append(sample["embedding"])
+                individual_embedding_hands.append(hand)
+    avg_embedding = build_overall_template(templates)
 
-    stored = db.get_all_embeddings()
-    for emb in template_embeddings:
-        dupe = palm_processor.compute_similarity(emb, stored, DUPLICATE_THRESHOLD)
-        if dupe["status"] == "ALLOWED":
+    stored_embeddings = db.get_all_embeddings()
+    for hand_template in template_embeddings:
+        duplicate_result = palm_processor.compute_similarity(
+            hand_template,
+            stored_embeddings,
+            DUPLICATE_THRESHOLD,
+        )
+        if duplicate_result["status"] == "ALLOWED":
             raise HTTPException(
                 status_code=409,
-                detail=f"This palm is already registered as '{dupe['name']}' "
-                       f"(similarity {dupe['similarity'] * 100:.0f}%). "
+                detail=f"This palm is already registered as '{duplicate_result['name']}' "
+                       f"(similarity {duplicate_result['similarity'] * 100:.0f}%). "
                        "Use a different palm or remove the existing user first.",
             )
 
@@ -132,8 +131,8 @@ async def register(req: RegisterRequest):
             req.name.strip(),
             avg_embedding,
             nim=nim,
-            individual_embeddings=raw_embeddings,
-            embedding_hands=raw_embedding_hands,
+            individual_embeddings=individual_embeddings,
+            embedding_hands=individual_embedding_hands,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

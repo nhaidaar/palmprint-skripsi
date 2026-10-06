@@ -1,7 +1,7 @@
 fastapi==0.115.*
 uvicorn[standard]==0.34.*
-mediapipe==0.10.*
-opencv-python-headless==4.11.*
+mediapipe==0.10.18
+opencv-contrib-python==4.11.*
 numpy>=1.26,<2.0
 python-multipart==0.0.*
 # Lightweight TensorFlow Lite runtime for Orange Pi / Linux SBC images

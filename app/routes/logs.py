@@ -11,8 +11,8 @@ router = APIRouter()
 
 ALLOWED_LOG_STATUSES = {"ALLOWED", "DENIED"}
 EXCEL_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-EXCEL_HEADERS = ("Time", "Name", "NIM", "Status", "Match %", "Duration", "Description")
-EXCEL_COLUMN_WIDTHS = (20, 24, 16, 14, 12, 14, 36)
+EXCEL_HEADERS = ("Time", "Name", "NIM", "Status", "Match %", "Duration", "Description", "Direction")
+EXCEL_COLUMN_WIDTHS = (20, 24, 16, 14, 12, 14, 36, 16)
 
 
 def _clean_status(status: str | None) -> str | None:
@@ -85,7 +85,7 @@ def _build_logs_workbook(
     border_side = Side(style="thin", color="E5E7EB")
     cell_border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
 
-    sheet.merge_cells("A1:G1")
+    sheet.merge_cells("A1:H1")
     title = sheet["A1"]
     title.value = "PalmGate Access Logs"
     title.fill = accent_fill
@@ -93,7 +93,7 @@ def _build_logs_workbook(
     title.alignment = Alignment(horizontal="center", vertical="center")
     sheet.row_dimensions[1].height = 28
 
-    sheet.merge_cells("A2:G2")
+    sheet.merge_cells("A2:H2")
     summary = sheet["A2"]
     summary.value = (
         f"Search: {_filter_label(q)} | Status: {_filter_label(status)} | "
@@ -115,14 +115,14 @@ def _build_logs_workbook(
         sheet.column_dimensions[get_column_letter(column)].width = width
 
     if not rows:
-        sheet.merge_cells("A5:G5")
+        sheet.merge_cells("A5:H5")
         empty = sheet["A5"]
         empty.value = "No matching logs"
         empty.font = Font(color="6B7280", italic=True)
         empty.alignment = Alignment(horizontal="center", vertical="center")
         empty.border = cell_border
         sheet.row_dimensions[5].height = 28
-        sheet.auto_filter.ref = "A4:G4"
+        sheet.auto_filter.ref = "A4:H4"
     else:
         for excel_row, row in enumerate(rows, start=5):
             values = (
@@ -133,6 +133,7 @@ def _build_logs_workbook(
                 row.get("similarity"),
                 row.get("duration_ms"),
                 _safe_text(row.get("description")),
+                _safe_text(row.get("direction"), "Unspecified"),
             )
             for column, value in enumerate(values, start=1):
                 cell = sheet.cell(row=excel_row, column=column, value=value)
@@ -153,7 +154,7 @@ def _build_logs_workbook(
                 status_cell.fill = denied_fill
                 status_cell.font = Font(color="B4232D", bold=True)
 
-        sheet.auto_filter.ref = f"A4:G{sheet.max_row}"
+        sheet.auto_filter.ref = f"A4:H{sheet.max_row}"
 
     output = BytesIO()
     workbook.save(output)

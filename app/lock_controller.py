@@ -76,6 +76,7 @@ class GpioLockController:
 
 def build_lock_controller():
     from app.config import (
+        APP_DEBUG,
         LOCK_ACTIVE_LOW,
         LOCK_GPIO_CHIP,
         LOCK_GPIO_ENABLED,
@@ -83,7 +84,7 @@ def build_lock_controller():
         LOCK_UNLOCK_MS,
     )
 
-    if not LOCK_GPIO_ENABLED:
+    if APP_DEBUG or not LOCK_GPIO_ENABLED:
         return NoopLockController()
 
     return GpioLockController(

@@ -1,4 +1,6 @@
 from dataclasses import dataclass, field
+from contextlib import ExitStack
+from pathlib import Path
 import logging
 import queue
 import threading
@@ -10,22 +12,21 @@ import numpy as np
 
 from app.camera import OpenCVCameraSource
 from app.config import (
-    CAMERA_DEVICE_PATH,
+    ENTRY_CAMERA_DEVICE_PATH,
+    EXIT_CAMERA_DEVICE_PATH,
     DEVICE_COOLDOWN_MS,
     DEVICE_FRAME_INTERVAL_MS,
     DEVICE_PREVIEW_FRAME_INTERVAL_MS,
     DEVICE_HOLD_MS,
     DEVICE_STATUS_HEARTBEAT_MS,
     DUPLICATE_THRESHOLD,
-    ENROLLMENT_TTA_ENABLED,
-    RECOGNITION_TTA_ENABLED,
     REGISTRATION_CAPTURES_PER_HAND,
     REGISTRATION_HANDS,
     REGISTRATION_MIN_VALID_PER_HAND,
     SIMILARITY_THRESHOLD,
 )
 from app.lock_controller import NoopLockController, build_lock_controller
-from app.services.embedding_templates import build_hand_templates, overall_template
+from app.services.embedding_templates import build_hand_templates, build_overall_template
 from app.services.recognition_service import match_embedding_and_log
 from app.services.registration_quality import SAMPLE_TARGETS, evaluate_guidance
 from app.services.scan_quality import scan_quality_failures
@@ -90,7 +91,11 @@ class DeviceRuntime:
         heartbeat_ms: int = DEVICE_STATUS_HEARTBEAT_MS,
         threshold: float = SIMILARITY_THRESHOLD,
         lock_controller=None,
+        direction: str = "ENTRY",
     ):
+        if direction not in ("ENTRY", "EXIT"):
+            raise ValueError("direction must be ENTRY or EXIT")
+        self.direction = direction
         self.camera = camera
         self.palm_processor = palm_processor
         self.db = db
@@ -119,8 +124,14 @@ class DeviceRuntime:
         self.scan_broadcaster = ScanEventBroadcaster()
 
     def capture_preview_frame(self):
-        with self._camera_lock:
-            frame = self.camera.read()
+        try:
+            with self._camera_lock:
+                frame = self.camera.read()
+        except Exception:
+            with self._frame_lock:
+                self.latest_frame = None
+            self.hand_seen_since_ms = None
+            raise
         with self._frame_lock:
             self.latest_frame = frame.copy()
         return frame
@@ -253,10 +264,7 @@ class DeviceRuntime:
             hand = self._hand_for_sample_index(sample_index, self.registration_session.hands)
             cv2.imwrite(os.path.join(save_dir, f"{hand}_{sample_index}.jpg"), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
-            embedding = self.palm_processor.get_embedding_from_notebook_frame(
-                frame,
-                tta_enabled=ENROLLMENT_TTA_ENABLED,
-            )
+            embedding, _ = self.palm_processor.extract_embedding_from_frame(frame)
             if embedding is None:
                 raise RuntimeError("Palm preprocessing failed")
             sample = {
@@ -293,28 +301,34 @@ class DeviceRuntime:
 
             template_hands = list(templates.keys())
             template_embeddings = [templates[hand].astype(np.float32) for hand in template_hands]
-            raw_embeddings = []
-            raw_embedding_hands = []
+            individual_embeddings = []
+            individual_embedding_hands = []
             for hand in self.registration_session.hands:
                 for sample in samples:
                     if sample["hand"] == hand:
-                        raw_embeddings.append(sample["embedding"].astype(np.float32))
-                        raw_embedding_hands.append(hand)
-            avg_embedding = overall_template(templates)
+                        individual_embeddings.append(sample["embedding"].astype(np.float32))
+                        individual_embedding_hands.append(hand)
+            avg_embedding = build_overall_template(templates)
 
-            stored = self.db.get_all_embeddings()
-            for embedding in template_embeddings:
-                duplicate = self.palm_processor.compute_similarity(embedding, stored, DUPLICATE_THRESHOLD)
-                if duplicate["status"] == "ALLOWED":
-                    raise RuntimeError(f"This palm is already registered as '{duplicate['name']}'")
+            stored_embeddings = self.db.get_all_embeddings()
+            for hand_template in template_embeddings:
+                duplicate_result = self.palm_processor.compute_similarity(
+                    hand_template,
+                    stored_embeddings,
+                    DUPLICATE_THRESHOLD,
+                )
+                if duplicate_result["status"] == "ALLOWED":
+                    raise RuntimeError(
+                        f"This palm is already registered as '{duplicate_result['name']}'"
+                    )
 
             try:
                 user_id = self.db.add_user(
                     self.registration_session.name,
                     avg_embedding,
                     nim=self.registration_session.nim,
-                    individual_embeddings=raw_embeddings,
-                    embedding_hands=raw_embedding_hands,
+                    individual_embeddings=individual_embeddings,
+                    embedding_hands=individual_embedding_hands,
                 )
             except ValueError as exc:
                 raise RuntimeError(str(exc)) from exc
@@ -327,15 +341,20 @@ class DeviceRuntime:
                 "user_id": user_id,
                 "nim": nim,
                 "name": name,
-                "stored_embeddings": len(raw_embeddings),
-                "hands": {hand: raw_embedding_hands.count(hand) for hand in REGISTRATION_HANDS},
+                "stored_embeddings": len(individual_embeddings),
+                "hands": {
+                    hand: individual_embedding_hands.count(hand)
+                    for hand in REGISTRATION_HANDS
+                },
             }
 
     def tick(self):
         now_ms = self.clock.now()
+        frame = self._read_frame()
 
         if self.last_heartbeat_ms is None or now_ms - self.last_heartbeat_ms >= self.heartbeat_ms:
             self.db.upsert_device_status(
+                direction=self.direction,
                 worker_state=self.worker_state,
                 camera_connected=True,
                 last_error=None,
@@ -347,7 +366,6 @@ class DeviceRuntime:
 
         with self._registration_lock:
             if self.registration_session is not None:
-                frame = self._read_frame()
                 previous_metrics = None
                 if self.registration_session.last_guidance:
                     previous_metrics = self.registration_session.last_guidance.get("metrics")
@@ -376,7 +394,6 @@ class DeviceRuntime:
             }
             return None
 
-        frame = self._read_frame()
         metrics = self.palm_processor.get_registration_guidance_metrics(frame)
         if not metrics.get("hand_detected", False):
             self.hand_seen_since_ms = None
@@ -414,10 +431,7 @@ class DeviceRuntime:
             return None
 
         self.scan_state = {"stage": "recognizing", "metrics": metrics}
-        embedding = self.palm_processor.get_embedding_from_notebook_frame(
-            frame,
-            tta_enabled=RECOGNITION_TTA_ENABLED,
-        )
+        embedding, _ = self.palm_processor.extract_embedding_from_frame(frame)
         if embedding is None:
             self.hand_seen_since_ms = None
             self.scan_state = {"stage": "preprocessing_failed", "metrics": metrics}
@@ -429,6 +443,7 @@ class DeviceRuntime:
             embedding,
             self.threshold,
             duration_ms=hold_elapsed_ms,
+            direction=self.direction,
         )
         self.last_recognition_at = str(now_ms)
         self.cooldown_until_ms = now_ms + self.cooldown_ms
@@ -440,6 +455,7 @@ class DeviceRuntime:
             "timestamp": self.last_recognition_at,
         })
         self.db.upsert_device_status(
+            direction=self.direction,
             worker_state=self.worker_state,
             camera_connected=True,
             last_error=None,
@@ -460,6 +476,7 @@ class DeviceRuntime:
                 self.capture_preview_frame()
             except Exception as exc:
                 self.db.upsert_device_status(
+                    direction=self.direction,
                     worker_state="error",
                     camera_connected=False,
                     last_error=str(exc),
@@ -467,7 +484,7 @@ class DeviceRuntime:
                     last_inference_ms=None,
                     last_recognition_at=self.last_recognition_at,
                 )
-            time.sleep(self.preview_frame_interval_ms / 1000)
+            self._stop_event.wait(self.preview_frame_interval_ms / 1000)
 
     def _run_loop(self):
         while not self._stop_event.is_set():
@@ -475,6 +492,7 @@ class DeviceRuntime:
                 self.tick()
             except Exception as exc:
                 self.db.upsert_device_status(
+                    direction=self.direction,
                     worker_state="error",
                     camera_connected=False,
                     last_error=str(exc),
@@ -482,7 +500,7 @@ class DeviceRuntime:
                     last_inference_ms=None,
                     last_recognition_at=self.last_recognition_at,
                 )
-            time.sleep(self.frame_interval_ms / 1000)
+            self._stop_event.wait(self.frame_interval_ms / 1000)
 
     def start(self):
         if self._thread is not None and self._thread.is_alive():
@@ -496,9 +514,9 @@ class DeviceRuntime:
     def stop(self):
         self._stop_event.set()
         if self._thread is not None:
-            self._thread.join(timeout=2)
+            self._thread.join()
         if self._preview_thread is not None:
-            self._preview_thread.join(timeout=2)
+            self._preview_thread.join()
         close = getattr(self.camera, "close", None)
         if callable(close):
             close()
@@ -507,32 +525,51 @@ class DeviceRuntime:
             close_lock()
 
 
-def build_device_runtime(palm_processor, db):
-    camera = OpenCVCameraSource(CAMERA_DEVICE_PATH)
-    return DeviceRuntime(
-        camera=camera,
-        palm_processor=palm_processor,
-        db=db,
-        lock_controller=build_lock_controller(),
-    )
+def build_device_runtime(palm_processor, db, direction="ENTRY", lock_controller=None):
+    if direction not in ("ENTRY", "EXIT"):
+        raise ValueError("direction must be ENTRY or EXIT")
+    entry_path, exit_path = Path(ENTRY_CAMERA_DEVICE_PATH), Path(EXIT_CAMERA_DEVICE_PATH)
+    if entry_path.resolve() == exit_path.resolve() or (
+        entry_path.is_char_device() and exit_path.is_char_device()
+        and entry_path.stat().st_rdev == exit_path.stat().st_rdev
+    ):
+        raise ValueError("ENTRY and EXIT must use different camera devices")
+    camera = OpenCVCameraSource(ENTRY_CAMERA_DEVICE_PATH if direction == "ENTRY" else EXIT_CAMERA_DEVICE_PATH)
+    try:
+        return DeviceRuntime(
+            camera=camera,
+            palm_processor=palm_processor,
+            db=db,
+            direction=direction,
+            lock_controller=lock_controller or build_lock_controller(),
+        )
+    except BaseException:
+        camera.close()
+        raise
 
 
 if __name__ == "__main__":
-    from app.config import DB_PATH
+    from app.config import APP_DEBUG, DB_PATH
+
+    if APP_DEBUG:
+        raise SystemExit("USB workers require APP_DEBUG=false; debug mode uses the browser camera.")
+
     from app.database import Database
     from app.palm_processor import PalmProcessor
 
-    db = Database(DB_PATH)
-    palm_processor = PalmProcessor()
-    runtime = build_device_runtime(palm_processor, db)
-
-    try:
-        runtime.start()
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        runtime.stop()
-        palm_processor.close()
-        db.close()
+    with ExitStack() as cleanup:
+        db = Database(DB_PATH)
+        cleanup.callback(db.close)
+        palm_processor = PalmProcessor()
+        cleanup.callback(palm_processor.close)
+        entry = build_device_runtime(palm_processor, db)
+        cleanup.callback(entry.stop)
+        exit = build_device_runtime(palm_processor, db, "EXIT", entry.lock_controller)
+        cleanup.callback(exit.stop)
+        try:
+            entry.start()
+            exit.start()
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass

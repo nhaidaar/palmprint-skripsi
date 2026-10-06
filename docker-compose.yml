@@ -1,5 +1,8 @@
 x-palmgate-common: &palmgate-common
   image: ${PALMGATE_IMAGE:-ghcr.io/nhaidaar/palmprint-be:latest}
+  build:
+    context: .
+    dockerfile: Dockerfile
   restart: unless-stopped
 
   env_file:
@@ -9,8 +12,8 @@ x-palmgate-common: &palmgate-common
     - "8000"
 
   volumes:
-    # ML model files live under the project models/ directory.
-    - ${PALMGATE_MODELS_DIR:-./models}/${MODEL_VERSION:-final}:/app/models/${MODEL_VERSION:-final}:ro
+    # Fixed runtime model and MediaPipe hand detector.
+    - ./model.tflite:/app/model.tflite:ro
     - ./hand_landmarker.task:/app/hand_landmarker.task:ro
     # Persistent storage for the SQLite database.
     - palmgate-db:/data
@@ -30,6 +33,9 @@ x-cloudflared-common: &cloudflared-common
 
 x-frontend-common: &frontend-common
   image: ${PALMGATE_FRONTEND_IMAGE:-ghcr.io/nhaidaar/palmprint-fe:latest}
+  build:
+    context: .
+    dockerfile: frontend/Dockerfile
   restart: unless-stopped
   expose:
     - "3000"
@@ -50,10 +56,8 @@ services:
     environment:
       # Database is stored in the named volume below so it survives rebuilds.
       - DB_PATH=/data/palmprint.db
-      - MODEL_VERSION=${MODEL_VERSION:-final}
-      # Browser mode: use a phone/laptop camera through the web UI.
-      - DEVICE_RUNTIME_ENABLED=0
-      - CAMERA_SOURCE=browser
+      # Debug mode uses the browser camera and always disables GPIO.
+      - APP_DEBUG=${APP_DEBUG:-true}
 
   palmgate-frontend-browser:
     <<: *frontend-common
@@ -78,11 +82,10 @@ services:
     environment:
       # Database is stored in the named volume below so it survives rebuilds.
       - DB_PATH=/data/palmprint.db
-      - MODEL_VERSION=${MODEL_VERSION:-final}
-      # USB mode: use the Orange Pi USB camera for registration and recognition.
-      - DEVICE_RUNTIME_ENABLED=1
-      - CAMERA_SOURCE=usb
-      - CAMERA_DEVICE_PATH=${CAMERA_DEVICE_PATH:-/dev/video0}
+      # Set APP_DEBUG=false for two USB workers. Registration uses ENTRY.
+      - APP_DEBUG=${APP_DEBUG:-true}
+      - ENTRY_CAMERA_DEVICE_PATH=/dev/video0
+      - EXIT_CAMERA_DEVICE_PATH=/dev/video2
       - DEVICE_PREVIEW_FRAME_INTERVAL_MS=33
       - DEVICE_FRAME_INTERVAL_MS=250
       - LOCK_GPIO_ENABLED=${LOCK_GPIO_ENABLED:-0}
@@ -91,8 +94,10 @@ services:
       - LOCK_ACTIVE_LOW=${LOCK_ACTIVE_LOW:-1}
       - LOCK_UNLOCK_MS=${LOCK_UNLOCK_MS:-2000}
     devices:
-      - ${CAMERA_DEVICE_PATH:-/dev/video0}:${CAMERA_DEVICE_PATH:-/dev/video0}
-      - ${LOCK_GPIO_CHIP:-/dev/gpiochip0}:${LOCK_GPIO_CHIP:-/dev/gpiochip0}
+      - source: "${ENTRY_CAMERA_DEVICE_PATH:-/dev/video0}"
+        target: /dev/video0
+      - source: "${EXIT_CAMERA_DEVICE_PATH:-/dev/video2}"
+        target: /dev/video2
 
   palmgate-frontend-usb:
     <<: *frontend-common
@@ -113,14 +118,14 @@ services:
   cloudflared-browser:
     <<: *cloudflared-common
     container_name: palmgate-cloudflared-browser
-    profiles: ["browser"]
+    profiles: ["tunnel-browser"]
     depends_on:
       - palmgate-proxy-browser
 
   cloudflared-usb:
     <<: *cloudflared-common
     container_name: palmgate-cloudflared-usb
-    profiles: ["usb"]
+    profiles: ["tunnel-usb"]
     depends_on:
       - palmgate-proxy-usb
 

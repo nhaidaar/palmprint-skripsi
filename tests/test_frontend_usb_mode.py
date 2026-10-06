@@ -21,16 +21,17 @@ def test_frontend_streams_usb_preview_without_browser_camera():
     source = read_component("ScanPanel.tsx")
 
     assert "const USB_PREVIEW_STREAM_URL = '/api/device-registration/preview.mjpg'" in source
-    assert "usbPreviewRef" in source
+    assert "?direction=ENTRY" in source
+    assert "?direction=EXIT" in source
     assert "URL.createObjectURL" not in source
 
 
-def test_usb_scan_button_captures_visible_usb_preview_not_hidden_video():
+def test_usb_workers_own_scanning_without_manual_browser_duplicates():
     source = read_component("ScanPanel.tsx")
 
-    assert "naturalWidth" in source
-    assert "const scanSource = usbDeviceMode ? usbPreviewRef.current : videoRef.current" in source
-    assert "await submitRecognitionImage(captureFrame(scanSource), usbDeviceMode ? 'usb-preview' : 'camera')" in source
+    assert "if (busyRef.current || usbDeviceMode) return" in source
+    assert "!usbDeviceMode && <>" in source
+    assert "scan-events?direction=${direction}" in source
 
 
 def test_registration_ui_requires_and_sends_nim():

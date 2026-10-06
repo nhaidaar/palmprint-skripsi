@@ -29,11 +29,8 @@ def test_runtime_recognizes_after_hold_threshold():
                 "steady": True,
             }
 
-        def get_embedding_from_notebook_frame(self, frame, tta_enabled=False):
-            return np.ones(4, dtype=np.float32)
-
-        def get_embedding(self, frame):
-            raise AssertionError("USB runtime must use notebook preprocessing")
+        def extract_embedding_from_frame(self, frame):
+            return np.ones(4, dtype=np.float32), None
 
         def compute_similarity(self, embedding, stored, threshold):
             return {
@@ -51,7 +48,7 @@ def test_runtime_recognizes_after_hold_threshold():
         def get_all_embeddings(self):
             return [{"id": 1, "name": "Naufal", "embedding": np.ones(4, dtype=np.float32)}]
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged.append((user_id, matched_name, status, similarity, duration_ms, description))
 
         def upsert_device_status(self, **kwargs):
@@ -93,8 +90,8 @@ def test_runtime_unlocks_once_for_allowed_match():
         def get_registration_guidance_metrics(self, frame, previous_metrics=None):
             return {"hand_detected": True, "hand_clipped": False}
 
-        def get_embedding_from_notebook_frame(self, frame, tta_enabled=False):
-            return np.ones(4, dtype=np.float32)
+        def extract_embedding_from_frame(self, frame):
+            return np.ones(4, dtype=np.float32), None
 
         def compute_similarity(self, embedding, stored, threshold):
             return {
@@ -112,7 +109,7 @@ def test_runtime_unlocks_once_for_allowed_match():
         def get_all_embeddings(self):
             return [{"id": 1, "name": "Naufal", "embedding": np.ones(4, dtype=np.float32)}]
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged.append((user_id, matched_name, status, similarity, duration_ms, description))
 
         def upsert_device_status(self, **kwargs):
@@ -161,8 +158,8 @@ def test_runtime_does_not_unlock_for_denied_match():
         def get_registration_guidance_metrics(self, frame, previous_metrics=None):
             return {"hand_detected": True, "hand_clipped": False}
 
-        def get_embedding_from_notebook_frame(self, frame, tta_enabled=False):
-            return np.ones(4, dtype=np.float32)
+        def extract_embedding_from_frame(self, frame):
+            return np.ones(4, dtype=np.float32), None
 
         def compute_similarity(self, embedding, stored, threshold):
             return {
@@ -180,7 +177,7 @@ def test_runtime_does_not_unlock_for_denied_match():
         def get_all_embeddings(self):
             return []
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged.append((user_id, matched_name, status, similarity, duration_ms, description))
 
         def upsert_device_status(self, **kwargs):
@@ -325,7 +322,7 @@ def test_runtime_tracks_scan_state_when_no_hand_detected():
         def get_registration_guidance_metrics(self, frame, previous_metrics=None):
             return {"hand_detected": False, "brightness": 80.0, "blur_score": 120.0}
 
-        def get_embedding_from_notebook_frame(self, frame, tta_enabled=False):
+        def extract_embedding_from_frame(self, frame):
             raise AssertionError("No-hand frames must not be embedded")
 
     class FakeDB:
@@ -358,8 +355,8 @@ def test_runtime_tracks_scan_state_while_holding_detected_hand():
         def get_registration_guidance_metrics(self, frame, previous_metrics=None):
             return {"hand_detected": True, "hand_clipped": False}
 
-        def get_embedding_from_notebook_frame(self, frame, tta_enabled=False):
-            return np.ones(4, dtype=np.float32)
+        def extract_embedding_from_frame(self, frame):
+            return np.ones(4, dtype=np.float32), None
 
     class FakeDB:
         def upsert_device_status(self, **kwargs):
@@ -401,9 +398,9 @@ def test_runtime_does_not_embed_until_hold_window_completes():
         def get_registration_guidance_metrics(self, frame, previous_metrics=None):
             return {"hand_detected": True, "hand_clipped": False}
 
-        def get_embedding_from_notebook_frame(self, frame, tta_enabled=False):
+        def extract_embedding_from_frame(self, frame):
             self.embedding_calls += 1
-            return np.ones(4, dtype=np.float32)
+            return np.ones(4, dtype=np.float32), None
 
         def compute_similarity(self, embedding, stored, threshold):
             return {
@@ -421,7 +418,7 @@ def test_runtime_does_not_embed_until_hold_window_completes():
         def get_all_embeddings(self):
             return []
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged.append((user_id, matched_name, status, similarity, duration_ms, description))
 
         def upsert_device_status(self, **kwargs):
@@ -471,9 +468,9 @@ def test_runtime_scans_again_after_cooldown_with_hand_still_present():
         def get_registration_guidance_metrics(self, frame, previous_metrics=None):
             return {"hand_detected": self.hand_detected, "hand_clipped": False}
 
-        def get_embedding_from_notebook_frame(self, frame, tta_enabled=False):
+        def extract_embedding_from_frame(self, frame):
             self.embedding_calls += 1
-            return np.ones(4, dtype=np.float32)
+            return np.ones(4, dtype=np.float32), None
 
         def compute_similarity(self, embedding, stored, threshold):
             return {
@@ -491,7 +488,7 @@ def test_runtime_scans_again_after_cooldown_with_hand_still_present():
         def get_all_embeddings(self):
             return [{"id": 1, "name": "Naufal", "embedding": np.ones(4, dtype=np.float32)}]
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged.append((user_id, matched_name, status, similarity, duration_ms, description))
 
         def upsert_device_status(self, **kwargs):
@@ -562,9 +559,9 @@ def test_runtime_recognizes_clipped_detected_hand_like_legacy_flow():
                 "steady": True,
             }
 
-        def get_embedding_from_notebook_frame(self, frame, tta_enabled=False):
+        def extract_embedding_from_frame(self, frame):
             self.embedding_calls += 1
-            return np.ones(4, dtype=np.float32)
+            return np.ones(4, dtype=np.float32), None
 
         def compute_similarity(self, embedding, stored, threshold):
             return {"status": "DENIED", "name": "Unknown", "similarity": 0.5, "closest_match": "Naufal", "user_id": None}
@@ -576,7 +573,7 @@ def test_runtime_recognizes_clipped_detected_hand_like_legacy_flow():
         def get_all_embeddings(self):
             return []
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged.append((user_id, matched_name, status, similarity, duration_ms, description))
 
         def upsert_device_status(self, **kwargs):
@@ -617,7 +614,7 @@ def test_runtime_does_not_recognize_without_detected_hand():
         def get_registration_guidance_metrics(self, frame, previous_metrics=None):
             return {"hand_detected": False, "hand_clipped": True}
 
-        def get_embedding_from_notebook_frame(self, frame, tta_enabled=False):
+        def extract_embedding_from_frame(self, frame):
             raise AssertionError("background must not be embedded without a detected hand")
 
     class FakeDB:
@@ -663,7 +660,7 @@ def test_start_registration_pauses_recognition():
                 "steady": False,
             }
 
-        def get_embedding_from_notebook_frame(self, frame, tta_enabled=False):
+        def extract_embedding_from_frame(self, frame):
             raise AssertionError("recognition should be paused during registration")
 
     class FakeDB:
@@ -736,8 +733,8 @@ def test_capture_registration_sample_uses_guidance_score():
             return np.zeros((240, 320, 3), dtype=np.uint8)
 
     class FakeProcessor:
-        def get_embedding_from_notebook_frame(self, frame, tta_enabled=False):
-            return np.ones(4, dtype=np.float32)
+        def extract_embedding_from_frame(self, frame):
+            return np.ones(4, dtype=np.float32), None
 
     runtime = DeviceRuntime(camera=FakeCamera(), palm_processor=FakeProcessor(), db=None)
     runtime.start_registration("12345", "Alice")
@@ -767,8 +764,8 @@ def test_capture_registration_sample_tags_first_five_left_next_five_right():
             return np.zeros((240, 320, 3), dtype=np.uint8)
 
     class FakeProcessor:
-        def get_embedding_from_notebook_frame(self, frame, tta_enabled=False):
-            return np.ones(4, dtype=np.float32)
+        def extract_embedding_from_frame(self, frame):
+            return np.ones(4, dtype=np.float32), None
 
     runtime = DeviceRuntime(camera=FakeCamera(), palm_processor=FakeProcessor(), db=None)
     runtime.start_registration("12345", "Alice")
@@ -789,8 +786,8 @@ def test_capture_registration_sample_uses_selected_hand_sequence():
             return np.zeros((240, 320, 3), dtype=np.uint8)
 
     class FakeProcessor:
-        def get_embedding_from_notebook_frame(self, frame, tta_enabled=False):
-            return np.ones(4, dtype=np.float32)
+        def extract_embedding_from_frame(self, frame):
+            return np.ones(4, dtype=np.float32), None
 
     runtime = DeviceRuntime(camera=FakeCamera(), palm_processor=FakeProcessor(), db=None)
     runtime.start_registration("12345", "Alice", hands=["right"])
@@ -1099,3 +1096,16 @@ def test_registration_tick_updates_real_guidance_from_processor():
     assert processor.called is True
     assert runtime.registration_session.last_guidance["acceptable"] is True
     assert runtime.registration_session.last_guidance["target"] == "center"
+def test_standalone_usb_workers_refuse_debug_mode_before_creating_database(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    db_path = tmp_path / "must-not-create.db"
+    env = {**os.environ, "PALMGATE_SKIP_DOTENV": "1", "APP_DEBUG": "true",
+           "LOCK_GPIO_ENABLED": "1", "DB_PATH": str(db_path)}
+    result = subprocess.run([sys.executable, "-m", "app.device_runtime"],
+                            env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+    assert "APP_DEBUG=false" in result.stderr
+    assert not db_path.exists()

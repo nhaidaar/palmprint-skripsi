@@ -4,13 +4,14 @@ import logging
 import re
 import time
 from pathlib import Path
+from typing import Literal
 
 import cv2
 import numpy as np
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.config import DEV_FEATURES_ENABLED, RECOGNITION_TTA_ENABLED, SIMILARITY_THRESHOLD
+from app.config import APP_DEBUG, DEV_FEATURES_ENABLED, SIMILARITY_THRESHOLD
 from app.services.recognition_service import match_embedding_and_log
 
 log = logging.getLogger("palmgate")
@@ -20,14 +21,16 @@ RECOGNITION_DEBUG_DIR = Path("data") / "debug" / "recognize"
 
 class RecognizeRequest(BaseModel):
     image: str
+    direction: Literal["ENTRY", "EXIT"] | None = None
     is_roi: bool = False          # True when the browser has pre-cropped the palm ROI
-    rotation_angle: float = 0.0   # Knuckle-line tilt (deg) from index-MCP→pinky-MCP vector
+    rotation_angle: float = 0.0   # Retained for wire compatibility; ignored for aligned client ROIs
     debug_roi: bool = False
     source: str = "scan"
 
 
 class RecognizeResponse(BaseModel):
     status: str
+    direction: Literal["ENTRY", "EXIT"] | None = None
     name: str
     similarity: float
     closest_match: "str | None" = None
@@ -97,16 +100,9 @@ async def recognize(req: RecognizeRequest):
 
     if req.is_roi:
         log.debug("RECOGNIZE | using pre-cropped client ROI — skipping server detection")
-        embedding, processed_roi = palm_processor.get_embedding_from_roi_with_processed_roi(
-            frame,
-            req.rotation_angle,
-            tta_enabled=RECOGNITION_TTA_ENABLED,
-        )
+        embedding, processed_roi = palm_processor.extract_embedding_from_roi(frame)
     else:
-        embedding, processed_roi = palm_processor.get_embedding_with_processed_roi(
-            frame,
-            tta_enabled=RECOGNITION_TTA_ENABLED,
-        )
+        embedding, processed_roi = palm_processor.extract_embedding_from_frame(frame)
     if not should_return_roi:
         processed_roi = None
 
@@ -115,7 +111,10 @@ async def recognize(req: RecognizeRequest):
         raise HTTPException(status_code=422, detail="No hand detected")
 
     duration_ms = int((time.perf_counter() - started_at) * 1000)
-    result = match_embedding_and_log(palm_processor, db, embedding, SIMILARITY_THRESHOLD, duration_ms=duration_ms)
+    result = match_embedding_and_log(
+        palm_processor, db, embedding, SIMILARITY_THRESHOLD,
+        duration_ms=duration_ms, direction=req.direction if APP_DEBUG else None,
+    )
     payload = dict(result)
     if should_return_roi:
         payload["debug_image_paths"] = await save_debug_images(frame, processed_roi, req.source)

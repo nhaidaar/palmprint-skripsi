@@ -1,5 +1,5 @@
-import json
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -29,77 +29,60 @@ def _load_env_file(path: Path) -> None:
 if os.getenv("PALMGATE_SKIP_DOTENV", "0") != "1":
     _load_env_file(BASE_DIR / ".env")
 
-DEFAULT_MODEL_VERSION = "final"
-DEFAULT_MODEL_DIR = BASE_DIR / "models" / "embedding"
-DEFAULT_MODEL_FILENAME = "palm_embedding.tflite"
-VERSIONED_MODEL_FILENAME = "model.tflite"
-DEFAULT_MODEL_METADATA_FILENAME = "model_metadata.json"
-DEFAULT_SIMILARITY_THRESHOLD = 0.745932400226593
-DEFAULT_EMBEDDING_DIM = 128
-DEFAULT_TTA_ROTATIONS = (0.0, -6.0, 6.0)
-
-MODEL_VERSION = os.getenv("MODEL_VERSION", DEFAULT_MODEL_VERSION).strip()
-MODEL_DIR = BASE_DIR / "models" / MODEL_VERSION if MODEL_VERSION else DEFAULT_MODEL_DIR
-MODEL_PATH = Path(os.getenv(
-    "MODEL_PATH",
-    str(MODEL_DIR / (VERSIONED_MODEL_FILENAME if MODEL_VERSION else DEFAULT_MODEL_FILENAME)),
-))
-MODEL_METADATA_PATH = Path(os.getenv("MODEL_METADATA_PATH", str(MODEL_DIR / DEFAULT_MODEL_METADATA_FILENAME)))
+DEFAULT_SIMILARITY_THRESHOLD = 0.75
+EMBEDDING_DIM = 128
+TTA_ROTATIONS = (0.0, -6.0, 6.0)
 HAND_LANDMARKER_PATH = BASE_DIR / "hand_landmarker.task"
-
-
-def _load_model_metadata(path: Path = MODEL_METADATA_PATH) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-MODEL_METADATA = _load_model_metadata()
 
 APP_HOST = os.getenv("APP_HOST", "127.0.0.1")
 APP_PORT = int(os.getenv("APP_PORT", "8000"))
 
-APP_ENV = os.getenv("APP_ENV", "production").strip().lower()
-if APP_ENV not in {"development", "production"}:
-    APP_ENV = "production"
-DEV_FEATURES_ENABLED = APP_ENV == "development"
+_app_debug = os.getenv("APP_DEBUG", "true").strip().lower()
+if _app_debug not in {"true", "false", "1", "0"}:
+    raise ValueError("APP_DEBUG must be true or false")
+APP_DEBUG = _app_debug in {"true", "1"}
+APP_ENV = "development" if APP_DEBUG else "production"
+DEV_FEATURES_ENABLED = APP_DEBUG
 PALMGATE_VERSION = os.getenv("PALMGATE_VERSION", "local").strip() or "local"
 
 # DB_PATH can be overridden via environment variable for Docker deployments
 # e.g. DB_PATH=/data/palmprint.db → mount a named volume at /data
 DB_PATH = Path(os.getenv("DB_PATH", str(BASE_DIR / "palmprint.db")))
 
-DEVICE_RUNTIME_ENABLED = os.getenv("DEVICE_RUNTIME_ENABLED", "0") == "1"
-CAMERA_SOURCE = os.getenv("CAMERA_SOURCE", "browser")
+DEVICE_RUNTIME_ENABLED = not APP_DEBUG
+CAMERA_SOURCE = "browser" if APP_DEBUG else "usb"
 CAMERA_DEVICE_PATH = os.getenv("CAMERA_DEVICE_PATH", "/dev/video0")
+ENTRY_CAMERA_DEVICE_PATH = os.getenv("ENTRY_CAMERA_DEVICE_PATH", CAMERA_DEVICE_PATH)
+EXIT_CAMERA_DEVICE_PATH = os.getenv("EXIT_CAMERA_DEVICE_PATH", "/dev/video2")
 DEVICE_FRAME_INTERVAL_MS = int(os.getenv("DEVICE_FRAME_INTERVAL_MS", "250"))
 DEVICE_PREVIEW_FRAME_INTERVAL_MS = int(os.getenv("DEVICE_PREVIEW_FRAME_INTERVAL_MS", "33"))
 DEVICE_HOLD_MS = int(os.getenv("DEVICE_HOLD_MS", "1200"))
 DEVICE_COOLDOWN_MS = int(os.getenv("DEVICE_COOLDOWN_MS", "3000"))
 DEVICE_STATUS_HEARTBEAT_MS = int(os.getenv("DEVICE_STATUS_HEARTBEAT_MS", "1000"))
-LOCK_GPIO_ENABLED = os.getenv("LOCK_GPIO_ENABLED", "0") == "1"
+LOCK_GPIO_ENABLED = not APP_DEBUG and os.getenv("LOCK_GPIO_ENABLED", "0") == "1"
 LOCK_GPIO_CHIP = os.getenv("LOCK_GPIO_CHIP", "/dev/gpiochip0")
 LOCK_GPIO_LINE = os.getenv("LOCK_GPIO_LINE", "75")
 LOCK_ACTIVE_LOW = os.getenv("LOCK_ACTIVE_LOW", "1") == "1"
 LOCK_UNLOCK_MS = int(os.getenv("LOCK_UNLOCK_MS", "2000"))
-NOTEBOOK_REMBG_ENABLED = os.getenv("NOTEBOOK_REMBG_ENABLED", "1") == "1"
-NOTEBOOK_REMBG_MODEL = os.getenv("NOTEBOOK_REMBG_MODEL", "u2net")
 
-EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", str(MODEL_METADATA.get("embedding_dim", DEFAULT_EMBEDDING_DIM))))
-SIMILARITY_THRESHOLD = float(os.getenv(
+def _read_threshold(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be numeric and between 0 and 1") from exc
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(f"{name} must be between 0 and 1")
+    return value
+
+
+SIMILARITY_THRESHOLD = _read_threshold(
     "SIMILARITY_THRESHOLD",
-    str(MODEL_METADATA.get("operating_threshold", DEFAULT_SIMILARITY_THRESHOLD)),
-))
-DUPLICATE_THRESHOLD = float(os.getenv("DUPLICATE_THRESHOLD", str(SIMILARITY_THRESHOLD)))
-
-_tta_value = MODEL_METADATA.get("tta_rotations", DEFAULT_TTA_ROTATIONS)
-TTA_ROTATIONS = tuple(float(value) for value in _tta_value)
-ENROLLMENT_TTA_ENABLED = os.getenv("ENROLLMENT_TTA_ENABLED", "1") == "1"
-RECOGNITION_TTA_ENABLED = os.getenv("RECOGNITION_TTA_ENABLED", "0") == "1"
+    DEFAULT_SIMILARITY_THRESHOLD,
+)
+DUPLICATE_THRESHOLD = _read_threshold(
+    "DUPLICATE_THRESHOLD",
+    SIMILARITY_THRESHOLD,
+)
 
 REGISTRATION_HANDS = ("left", "right")
 REGISTRATION_CAPTURES_PER_HAND = 5

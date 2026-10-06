@@ -12,12 +12,12 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class FakePalmProcessor:
     def __init__(self):
-        self.tta_values = []
+        self.call_count = 0
 
-    def get_embedding(self, frame_rgb, tta_enabled=False):
-        self.tta_values.append(tta_enabled)
-        value = float(frame_rgb[0, 0, 0])
-        return np.array([value, value + 1, value + 2, value + 3], dtype=np.float32)
+    def extract_embedding_from_frame(self, frame_rgb):
+        self.call_count += 1
+        value = float(self.call_count)
+        return np.full(128, value, dtype=np.float32), None
 
     def compute_similarity(self, embedding, stored, threshold):
         return {"status": "DENIED", "name": "Unknown", "similarity": 0.0}
@@ -45,7 +45,7 @@ def test_build_seed_embedding_uses_runtime_embedding_path():
 
     assert result.variant_count == 1
     assert result.selected_count == 1
-    np.testing.assert_allclose(result.embedding, np.array([20, 21, 22, 23], dtype=np.float32))
+    np.testing.assert_allclose(result.embedding, np.ones(128, dtype=np.float32))
     assert len(result.individual_embeddings) == 1
     np.testing.assert_allclose(result.individual_embeddings[0], result.embedding)
 
@@ -320,7 +320,7 @@ def test_system_register_layout_creates_one_user_per_hand_with_stable_nims(tmp_p
         ("2-R", "Naufal Haidar"),
     ]
     assert [entry["hand"] for entry in db.get_all_embeddings()] == ["left"] * 5 + ["right"] * 5 + ["left"] * 5 + ["right"] * 5
-    assert processor.tta_values == [True] * 20
+    assert processor.call_count == 20
 
 
 def test_system_register_layout_rejects_folders_without_hand_suffix(tmp_path):

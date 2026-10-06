@@ -21,7 +21,7 @@ def test_match_and_log_allowed_result(caplog):
         def get_all_embeddings(self):
             return [{"id": 1, "name": "Naufal", "embedding": np.ones(4, dtype=np.float32)}]
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged = (user_id, matched_name, status, similarity, duration_ms, description)
 
     from app.services.recognition_service import match_embedding_and_log
@@ -54,7 +54,7 @@ def test_match_and_log_denied_result_describes_closest_match():
         def get_all_embeddings(self):
             return [{"id": 1, "name": "Naufal", "embedding": np.ones(4, dtype=np.float32)}]
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             self.logged = (user_id, matched_name, status, similarity, duration_ms, description)
 
     from app.services.recognition_service import match_embedding_and_log

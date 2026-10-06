@@ -1,9 +1,11 @@
 import asyncio
 import base64
 import logging
+from contextlib import closing
 
 import cv2
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -14,6 +16,41 @@ def encoded_image():
     ok, data = cv2.imencode(".jpg", frame)
     assert ok
     return "data:image/jpeg;base64," + base64.b64encode(data.tobytes()).decode("ascii")
+
+
+@pytest.mark.parametrize(("debug", "direction", "expected"), [
+    (True, "ENTRY", "ENTRY"), (True, "EXIT", "EXIT"), (False, "EXIT", None),
+])
+def test_browser_direction_is_recorded_only_for_debug_inputs(tmp_path, monkeypatch, debug, direction, expected):
+    import app.main as main
+    import app.routes.recognize as recognize_route
+    from app.database import Database
+
+    class Processor:
+        def extract_embedding_from_frame(self, frame):
+            return np.ones(4), None
+
+        def compute_similarity(self, embedding, stored, threshold):
+            return {"status": "ALLOWED", "name": "Alice", "similarity": 0.95,
+                    "user_id": user_id, "closest_match": "Alice"}
+
+    with closing(Database(tmp_path / "access.db")) as db:
+        user_id = db.add_user("Alice", np.ones(4), nim="A001")
+        monkeypatch.setattr(main, "db", db)
+        monkeypatch.setattr(main, "palm_processor", Processor())
+        monkeypatch.setattr(recognize_route, "APP_DEBUG", debug)
+        client = TestClient(app)
+        response = client.post("/api/recognize", json={"image": encoded_image(), "direction": direction})
+        assert response.status_code == 200
+        assert response.json()["direction"] == expected
+        logs = client.get("/api/logs").json()
+        assert [(row["direction"], row["status"]) for row in logs] == [(expected, "ALLOWED")]
+
+
+def test_browser_scan_rejects_invalid_direction():
+    response = TestClient(app).post("/api/recognize", json={"image": encoded_image(), "direction": "SIDE"})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "direction"]
 
 
 def test_encode_roi_image_logs_warning_when_imencode_fails(monkeypatch, caplog):
@@ -58,9 +95,8 @@ def test_recognize_full_frame_uses_processed_roi_embedding(monkeypatch):
         def __init__(self):
             self.used_processed_roi = False
 
-        def get_embedding_with_processed_roi(self, frame, tta_enabled=False):
+        def extract_embedding_from_frame(self, frame):
             self.used_processed_roi = True
-            self.tta_enabled = tta_enabled
             return np.ones(4, dtype=np.float32), np.zeros((2, 2, 3), dtype=np.uint8)
 
         def compute_similarity(self, embedding, stored, threshold):
@@ -76,7 +112,7 @@ def test_recognize_full_frame_uses_processed_roi_embedding(monkeypatch):
         def get_all_embeddings(self):
             return []
 
-        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None):
+        def add_access_log(self, user_id, matched_name, status, similarity, duration_ms=None, description=None, direction=None):
             pass
 
     processor = FakeProcessor()
@@ -90,20 +126,26 @@ def test_recognize_full_frame_uses_processed_roi_embedding(monkeypatch):
     assert processor.used_processed_roi is True
 
 
-def test_recognize_uses_recognition_tta_flag(monkeypatch):
+def test_recognize_roi_accepts_but_does_not_forward_rotation_angle(monkeypatch):
     import app.main as main
     import app.routes.recognize as recognize_route
 
     class FakeProcessor:
         def __init__(self):
-            self.tta_enabled = None
+            self.calls = 0
 
-        def get_embedding_with_processed_roi(self, frame, tta_enabled=False):
-            self.tta_enabled = tta_enabled
+        def extract_embedding_from_roi(self, roi):
+            self.calls += 1
             return np.ones(4, dtype=np.float32), np.zeros((2, 2, 3), dtype=np.uint8)
 
         def compute_similarity(self, embedding, stored, threshold):
-            return {"status": "DENIED", "name": "Unknown", "similarity": 0.1, "closest_match": None, "user_id": None}
+            return {
+                "status": "DENIED",
+                "name": "Unknown",
+                "similarity": 0.1,
+                "closest_match": None,
+                "user_id": None,
+            }
 
     class FakeDB:
         def get_all_embeddings(self):
@@ -112,17 +154,23 @@ def test_recognize_uses_recognition_tta_flag(monkeypatch):
         def add_access_log(self, *args, **kwargs):
             pass
 
-    fake_processor = FakeProcessor()
-    monkeypatch.setattr(main, "palm_processor", fake_processor)
+    processor = FakeProcessor()
+    monkeypatch.setattr(main, "palm_processor", processor)
     monkeypatch.setattr(main, "db", FakeDB())
-    monkeypatch.setattr(recognize_route, "RECOGNITION_TTA_ENABLED", True)
-    monkeypatch.setattr(recognize_route, "decode_base64_image", lambda image: np.zeros((2, 2, 3), dtype=np.uint8))
-
+    monkeypatch.setattr(
+        recognize_route,
+        "decode_base64_image",
+        lambda image: np.zeros((2, 2, 3), dtype=np.uint8),
+    )
     client = TestClient(app)
-    response = client.post("/api/recognize", json={"image": "img"})
+
+    response = client.post(
+        "/api/recognize",
+        json={"image": "img", "is_roi": True, "rotation_angle": 30.0},
+    )
 
     assert response.status_code == 200
-    assert fake_processor.tta_enabled is True
+    assert processor.calls == 1
 
 
 def test_recognize_returns_roi_image_in_dev_debug_mode(monkeypatch, tmp_path):
@@ -130,7 +178,7 @@ def test_recognize_returns_roi_image_in_dev_debug_mode(monkeypatch, tmp_path):
     import app.routes.recognize as recognize_route
 
     class FakeProcessor:
-        def get_embedding_with_processed_roi(self, frame, tta_enabled=False):
+        def extract_embedding_from_frame(self, frame):
             self.used_debug_roi = True
             return np.ones(4, dtype=np.float32), np.full((224, 224, 3), 128, dtype=np.uint8)
 
@@ -172,7 +220,7 @@ def test_recognize_saves_debug_frame_and_roi_in_dev_debug_mode(monkeypatch, tmp_
     import app.routes.recognize as recognize_route
 
     class FakeProcessor:
-        def get_embedding_with_processed_roi(self, frame, tta_enabled=False):
+        def extract_embedding_from_frame(self, frame):
             return np.ones(4, dtype=np.float32), np.full((224, 224, 3), 128, dtype=np.uint8)
 
         def compute_similarity(self, embedding, stored, threshold):
@@ -207,7 +255,7 @@ def test_recognize_discards_processed_roi_when_debug_roi_is_disabled(monkeypatch
     import app.routes.recognize as recognize_route
 
     class FakeProcessor:
-        def get_embedding_with_processed_roi(self, frame, tta_enabled=False):
+        def extract_embedding_from_frame(self, frame):
             return np.ones(4, dtype=np.float32), np.full((224, 224, 3), 128, dtype=np.uint8)
 
         def compute_similarity(self, embedding, stored, threshold):
@@ -238,7 +286,7 @@ def test_recognize_does_not_return_roi_image_in_production(monkeypatch):
     import app.routes.recognize as recognize_route
 
     class FakeProcessor:
-        def get_embedding_with_processed_roi(self, frame, tta_enabled=False):
+        def extract_embedding_from_frame(self, frame):
             return np.ones(4, dtype=np.float32), np.zeros((2, 2, 3), dtype=np.uint8)
 
         def compute_similarity(self, embedding, stored, threshold):

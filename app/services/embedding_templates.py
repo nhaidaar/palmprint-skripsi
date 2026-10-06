@@ -9,7 +9,7 @@ def l2_normalize(embedding: np.ndarray) -> np.ndarray:
     return (vector / norm).astype(np.float32)
 
 
-def mean_template(embeddings: list[np.ndarray]) -> np.ndarray:
+def build_embedding_template(embeddings: list[np.ndarray]) -> np.ndarray:
     if not embeddings:
         raise ValueError("At least one embedding is required")
     normalized = [l2_normalize(embedding) for embedding in embeddings]
@@ -27,11 +27,11 @@ def build_hand_templates(
         embeddings = [sample["embedding"] for sample in samples if sample.get("hand") == hand]
         if len(embeddings) < min_per_hand:
             raise ValueError(f"Not enough valid {hand} samples")
-        templates[hand] = mean_template(embeddings)
+        templates[hand] = build_embedding_template(embeddings)
     return templates
 
 
-def overall_template(templates: dict[str, np.ndarray]) -> np.ndarray:
+def build_overall_template(templates: dict[str, np.ndarray]) -> np.ndarray:
     if not templates:
         raise ValueError("At least one hand template is required")
-    return mean_template(list(templates.values()))
+    return build_embedding_template(list(templates.values()))

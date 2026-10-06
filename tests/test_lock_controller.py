@@ -1,6 +1,21 @@
 import pytest
 
 
+def test_debug_never_initializes_gpio_even_when_requested(monkeypatch):
+    import sys
+    import app.config as config
+    from app.lock_controller import NoopLockController, build_lock_controller
+
+    monkeypatch.setattr(config, "APP_DEBUG", True)
+    monkeypatch.setattr(config, "LOCK_GPIO_ENABLED", True)
+    monkeypatch.setitem(sys.modules, "gpiod", None)
+
+    controller = build_lock_controller()
+    assert isinstance(controller, NoopLockController)
+    controller.unlock()
+    controller.close()
+
+
 def _fake_gpiod(events):
     class FakeValue:
         ACTIVE = "active"

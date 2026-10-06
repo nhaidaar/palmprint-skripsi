@@ -59,7 +59,7 @@ def test_compose_uses_prebuilt_frontend_image_by_default():
     frontend_common = compose[compose.index("x-frontend-common:") : compose.index("x-proxy-common:")]
 
     assert "image: ${PALMGATE_FRONTEND_IMAGE:-ghcr.io/nhaidaar/palmprint-fe:latest}" in frontend_common
-    assert "build:" not in frontend_common
+    assert "build:" in frontend_common
 
 
 def test_github_actions_publishes_frontend_ghcr_image():
