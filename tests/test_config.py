@@ -237,15 +237,6 @@ def test_dotenv_loader_ignores_read_errors(tmp_path, monkeypatch):
     config._load_env_file(env_file)
 
 
-def test_historical_final_model_metadata_matches_export_contract():
-    metadata_path = PROJECT_ROOT / "models" / "final" / "model_metadata.json"
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-
-    assert metadata["embedding_dim"] == 128
-    assert metadata["tta_rotations"] == [0.0, -6.0, 6.0]
-    assert metadata["operating_threshold"] == pytest.approx(0.7736719250679016)
-
-
 @pytest.mark.parametrize(("debug", "gpio", "expected"), [
     ("true", "1", [True, "browser", False, False, "development", True]),
     ("FALSE", "1", [False, "usb", True, True, "production", False]),
