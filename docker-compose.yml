@@ -1,133 +1,45 @@
-x-palmgate-common: &palmgate-common
-  image: ${PALMGATE_IMAGE:-ghcr.io/nhaidaar/palmprint-be:latest}
-  build:
-    context: .
-    dockerfile: Dockerfile
-  restart: unless-stopped
-
-  env_file:
-    - .env
-
-  expose:
-    - "8000"
-
-  volumes:
-    # Fixed runtime model and MediaPipe hand detector.
-    - ./model.tflite:/app/model.tflite:ro
-    - ./hand_landmarker.task:/app/hand_landmarker.task:ro
-    # Persistent storage for the SQLite database.
-    - palmgate-db:/data
-    # Save registration captures into ./data/captures on the host.
-    - ./data/captures:/data/captures
-
-  # Optional: uncomment to limit resource usage on a small VPS
-  # deploy:
-  #   resources:
-  #     limits:
-  #       memory: 1g
-
-x-cloudflared-common: &cloudflared-common
-  image: cloudflare/cloudflared:latest
-  restart: unless-stopped
-  command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
-
-x-frontend-common: &frontend-common
-  image: ${PALMGATE_FRONTEND_IMAGE:-ghcr.io/nhaidaar/palmprint-fe:latest}
-  build:
-    context: .
-    dockerfile: frontend/Dockerfile
-  restart: unless-stopped
-  expose:
-    - "3000"
-
-x-proxy-common: &proxy-common
-  image: nginx:1.27-alpine
-  restart: unless-stopped
-  volumes:
-    - ./deploy/nginx/palmgate.conf:/etc/nginx/templates/default.conf.template:ro
-  ports:
-    - "${PALMGATE_HTTP_PORT:-8080}:8080"
-
 services:
-  palmgate-api-browser:
-    <<: *palmgate-common
-    container_name: palmgate-api-browser
-    profiles: ["browser"]
+  palmgate-api:
+    image: ${PALMGATE_IMAGE:-ghcr.io/nhaidaar/palmprint-be:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      # Database is stored in the named volume below so it survives rebuilds.
       - DB_PATH=/data/palmprint.db
-      # Debug mode uses the browser camera and always disables GPIO.
       - APP_DEBUG=${APP_DEBUG:-true}
+    expose:
+      - "8000"
+    volumes:
+      - ./model.tflite:/app/model.tflite:ro
+      - ./hand_landmarker.task:/app/hand_landmarker.task:ro
+      - palmgate-db:/data
+      - ./data/captures:/data/captures
 
-  palmgate-frontend-browser:
-    <<: *frontend-common
-    container_name: palmgate-frontend-browser
-    profiles: ["browser"]
+  palmgate-frontend:
+    image: ${PALMGATE_FRONTEND_IMAGE:-ghcr.io/nhaidaar/palmprint-fe:latest}
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    expose:
+      - "3000"
 
-  palmgate-proxy-browser:
-    <<: *proxy-common
-    container_name: palmgate-proxy-browser
-    profiles: ["browser"]
+  palmgate-proxy:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
     depends_on:
-      - palmgate-api-browser
-      - palmgate-frontend-browser
+      - palmgate-api
+      - palmgate-frontend
     environment:
-      - PALMGATE_API_UPSTREAM=http://palmgate-api-browser:8000
-      - PALMGATE_FRONTEND_UPSTREAM=http://palmgate-frontend-browser:3000
-
-  palmgate-api-usb:
-    <<: *palmgate-common
-    container_name: palmgate-api-usb
-    profiles: ["usb"]
-    environment:
-      # Database is stored in the named volume below so it survives rebuilds.
-      - DB_PATH=/data/palmprint.db
-      # Set APP_DEBUG=false for two USB workers. Registration uses ENTRY.
-      - APP_DEBUG=${APP_DEBUG:-true}
-      - ENTRY_CAMERA_DEVICE_PATH=/dev/video0
-      - EXIT_CAMERA_DEVICE_PATH=/dev/video2
-      - DEVICE_PREVIEW_FRAME_INTERVAL_MS=33
-      - DEVICE_FRAME_INTERVAL_MS=250
-      - LOCK_GPIO_ENABLED=${LOCK_GPIO_ENABLED:-0}
-      - LOCK_GPIO_CHIP=${LOCK_GPIO_CHIP:-/dev/gpiochip0}
-      - LOCK_GPIO_LINE=${LOCK_GPIO_LINE:-75}
-      - LOCK_ACTIVE_LOW=${LOCK_ACTIVE_LOW:-1}
-      - LOCK_UNLOCK_MS=${LOCK_UNLOCK_MS:-2000}
-    devices:
-      - source: "${ENTRY_CAMERA_DEVICE_PATH:-/dev/video0}"
-        target: /dev/video0
-      - source: "${EXIT_CAMERA_DEVICE_PATH:-/dev/video2}"
-        target: /dev/video2
-
-  palmgate-frontend-usb:
-    <<: *frontend-common
-    container_name: palmgate-frontend-usb
-    profiles: ["usb"]
-
-  palmgate-proxy-usb:
-    <<: *proxy-common
-    container_name: palmgate-proxy-usb
-    profiles: ["usb"]
-    depends_on:
-      - palmgate-api-usb
-      - palmgate-frontend-usb
-    environment:
-      - PALMGATE_API_UPSTREAM=http://palmgate-api-usb:8000
-      - PALMGATE_FRONTEND_UPSTREAM=http://palmgate-frontend-usb:3000
-
-  cloudflared-browser:
-    <<: *cloudflared-common
-    container_name: palmgate-cloudflared-browser
-    profiles: ["tunnel-browser"]
-    depends_on:
-      - palmgate-proxy-browser
-
-  cloudflared-usb:
-    <<: *cloudflared-common
-    container_name: palmgate-cloudflared-usb
-    profiles: ["tunnel-usb"]
-    depends_on:
-      - palmgate-proxy-usb
+      - PALMGATE_API_UPSTREAM=http://palmgate-api:8000
+      - PALMGATE_FRONTEND_UPSTREAM=http://palmgate-frontend:3000
+    volumes:
+      - ./deploy/nginx/palmgate.conf:/etc/nginx/templates/default.conf.template:ro
+    ports:
+      - "${PALMGATE_HTTP_PORT:-8080}:8080"
 
 volumes:
   palmgate-db:

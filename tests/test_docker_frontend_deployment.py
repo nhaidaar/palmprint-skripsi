@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -24,23 +25,18 @@ def test_nginx_proxy_routes_frontend_and_api_streams():
     assert "X-Accel-Buffering" in source
 
 
-def test_compose_runs_api_frontend_and_proxy_for_profiles():
+def test_compose_runs_one_shared_stack_without_hardware_or_tunnel():
     compose = Path("docker-compose.yml").read_text()
 
-    assert "palmgate-api-browser:" in compose
-    assert "palmgate-api-usb:" in compose
-    assert "palmgate-frontend-browser:" in compose
-    assert "palmgate-frontend-usb:" in compose
-    assert "palmgate-proxy-browser:" in compose
-    assert "palmgate-proxy-usb:" in compose
-    assert "PALMGATE_API_UPSTREAM=http://palmgate-api-browser:8000" in compose
-    assert "PALMGATE_API_UPSTREAM=http://palmgate-api-usb:8000" in compose
-    assert "PALMGATE_FRONTEND_UPSTREAM=http://palmgate-frontend-browser:3000" in compose
-    assert "PALMGATE_FRONTEND_UPSTREAM=http://palmgate-frontend-usb:3000" in compose
-    assert "cloudflared-browser:" in compose
-    assert "palmgate-proxy-browser" in compose
-    assert "cloudflared-usb:" in compose
-    assert "palmgate-proxy-usb" in compose
+    services = compose.split("services:\n", 1)[1].split("\nvolumes:", 1)[0]
+    assert set(re.findall(r"^  ([\w-]+):", services, re.MULTILINE)) == {
+        "palmgate-api", "palmgate-frontend", "palmgate-proxy",
+    }
+    assert "PALMGATE_API_UPSTREAM=http://palmgate-api:8000" in compose
+    assert "PALMGATE_FRONTEND_UPSTREAM=http://palmgate-frontend:3000" in compose
+    assert "profiles:" not in compose
+    assert "cloudflare" not in compose.lower()
+    assert "devices:" not in compose
 
 
 def test_dockerignore_keeps_frontend_source_but_ignores_node_artifacts():
@@ -56,7 +52,7 @@ def test_dockerignore_keeps_frontend_source_but_ignores_node_artifacts():
 
 def test_compose_uses_prebuilt_frontend_image_by_default():
     compose = Path("docker-compose.yml").read_text()
-    frontend_common = compose[compose.index("x-frontend-common:") : compose.index("x-proxy-common:")]
+    frontend_common = compose[compose.index("  palmgate-frontend:") : compose.index("  palmgate-proxy:")]
 
     assert "image: ${PALMGATE_FRONTEND_IMAGE:-ghcr.io/nhaidaar/palmprint-fe:latest}" in frontend_common
     assert "build:" in frontend_common

@@ -77,16 +77,25 @@ Open [http://localhost:3000](http://localhost:3000). In **Scan Palm**, choose **
 
 ## Run with Docker
 
-Docker Compose reads `.env`, not `.env.example`. The example defaults to debug mode with the `browser` profile, which does not map USB or GPIO devices:
+Docker Compose reads `.env`, not `.env.example`. One shared API, frontend, and Nginx proxy stack serves both modes. The example defaults to debug mode without USB or GPIO mappings:
 
 ```bash
 cp .env.example .env
-docker compose build palmgate-api-browser palmgate-frontend-browser
-docker compose pull palmgate-proxy-browser
+docker compose build palmgate-api palmgate-frontend
+docker compose pull palmgate-proxy
 docker compose up -d --no-build --pull never
 ```
 
-Open `http://localhost:8080`. For non-debug mode, set both `APP_DEBUG=false` and `COMPOSE_PROFILES=usb` in `.env`; the profile selects containers with USB device mappings, while `APP_DEBUG` controls application behavior. Stop the old profile before switching (`docker compose --profile browser down` or `docker compose --profile usb down`, without `-v` to preserve data).
+Open `http://localhost:8080`. For non-debug mode on Linux, set these values in `.env`:
+
+```dotenv
+APP_DEBUG=false
+COMPOSE_FILE=docker-compose.yml:docker-compose.device.yml
+```
+
+`APP_DEBUG` controls application behavior; the device overlay maps the two host cameras into the same API container. `COMPOSE_FILE` makes ordinary `docker compose` commands include the overlay automatically. For debug mode, set `APP_DEBUG=true` and remove `COMPOSE_FILE` from `.env`, then run `docker compose up -d` to recreate the API without device mappings.
+
+When migrating from the old browser/USB profiles, remove `COMPOSE_PROFILES` and `CLOUDFLARE_TUNNEL_TOKEN` from `.env`, then run `docker compose up -d --remove-orphans` to replace the old containers. Keep the same project directory/project name to reuse the existing `palmgate-db` volume; do not use `down -v`, which deletes the database.
 
 Use a 64-bit Linux image on the Orange Pi Zero 3 (`uname -m` should print `aarch64`). On the Orange Pi host, find the two camera capture nodes:
 
@@ -103,15 +112,15 @@ To run this checkout (including local changes):
 
 ```bash
 cp .env.example .env
-# Set APP_DEBUG=false, COMPOSE_PROFILES=usb, and the two camera paths in .env.
-docker compose build palmgate-api-usb palmgate-frontend-usb
-docker compose pull palmgate-proxy-usb
+# Set APP_DEBUG=false, uncomment COMPOSE_FILE, and set both camera paths in .env.
+docker compose build palmgate-api palmgate-frontend
+docker compose pull palmgate-proxy
 docker compose up -d --no-build --pull never
 ```
 
 Open `http://<device-ip>:8080`. Keep `model.tflite` and `hand_landmarker.task` in the project root. Both are mounted read-only; SQLite data persists in the `palmgate-db` volume. Run one API process so both cameras share one recognition model instance.
 
-To use published GHCR images after these changes have been published:
+To use published GHCR images, configure `.env` for the desired mode:
 
 ```bash
 cp .env.example .env
@@ -140,12 +149,10 @@ The Python GPIO binding uses the kernel's [GPIO v2 interface](https://docs.kerne
 Set `LOCK_GPIO_CHIP=/dev/gpiochip0` and `LOCK_GPIO_LINE=75` in `.env` if the `gpioinfo` output matches. These are the chip path and line offset, not the physical header pin number. Set `LOCK_ACTIVE_LOW=1` for a relay triggered by a low signal (`0` for high), and `LOCK_UNLOCK_MS` for its pulse duration. PC11 is a 3.3 V GPIO signal; use a 3.3 V compatible relay driver and common ground, not the pin to power a lock. Leave `LOCK_GPIO_ENABLED=0` in `.env`; the GPIO overlay enables it and maps the chip:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpio.yml up -d --no-build --pull never
+docker compose -f docker-compose.yml -f docker-compose.device.yml -f docker-compose.gpio.yml up -d --no-build --pull never
 ```
 
-The overlay requires `APP_DEBUG=false` to actuate GPIO; debug mode always disables the relay. Check both camera states with `curl http://localhost:8080/api/status` (`devices.ENTRY` and `devices.EXIT`) and inspect startup errors with `docker compose logs palmgate-api-usb`. With GPIO enabled, an ALLOWED result from either USB camera pulses the same configured relay.
-
-Cloudflare is optional too. Set `CLOUDFLARE_TUNNEL_TOKEN`, then enable the `tunnel-usb` profile alongside `usb` when remote access is needed.
+For subsequent commands to include GPIO automatically, set `COMPOSE_FILE=docker-compose.yml:docker-compose.device.yml:docker-compose.gpio.yml` in `.env`. The overlay requires `APP_DEBUG=false` to actuate GPIO; debug mode always disables the relay. Check both camera states with `curl http://localhost:8080/api/status` (`devices.ENTRY` and `devices.EXIT`) and inspect startup errors with `docker compose logs palmgate-api`. With GPIO enabled, an ALLOWED result from either USB camera pulses the same configured relay.
 
 ## Current features
 
@@ -177,7 +184,7 @@ DENIED | user=Unknown | similarity=0.4200 | direction=EXIT
 For the supported Docker Compose deployment, inspect backend logs with:
 
 ```bash
-docker compose logs -f palmgate-api-usb
+docker compose logs -f palmgate-api
 ```
 
 ## `/api/status`
@@ -244,9 +251,9 @@ Seeded users are for initial testing only. Re-register users with the USB two-ha
 ### Phase 1 — iPhone test mode over Wi-Fi
 This is the easiest way to test before attaching a USB camera.
 
-1. Set `APP_DEBUG=true` and `COMPOSE_PROFILES=browser` in `.env`, then start the browser Docker profile:
+1. Set `APP_DEBUG=true` and leave `COMPOSE_FILE` unset in `.env`, then start the shared stack:
    ```bash
-   docker compose --profile browser up -d
+   docker compose up -d
    ```
 2. Put the Orange Pi and iPhone on the same Wi-Fi network
 3. Open the dashboard through HTTPS on the iPhone (a plain HTTP LAN address does not allow browser camera access).
@@ -271,13 +278,13 @@ The worker will:
 
 ## Orange Pi service management
 
-This repository does not include systemd unit files. Use the USB Docker Compose profile for the always-on API, frontend, device worker, and proxy:
+This repository does not include systemd unit files. Use the shared Docker Compose stack with the camera overlay for the always-on API, frontend, device workers, and proxy:
 
 ```bash
 cp .env.example .env
-# Set APP_DEBUG=false and COMPOSE_PROFILES=usb in .env.
+# Set APP_DEBUG=false and uncomment COMPOSE_FILE in .env.
 docker compose pull
-docker compose --profile usb up -d
+docker compose up -d
 ```
 
 Manage the deployment with Compose:
@@ -285,7 +292,7 @@ Manage the deployment with Compose:
 ```bash
 docker compose ps
 docker compose restart
-docker compose logs -f palmgate-api-usb
+docker compose logs -f palmgate-api
 ```
 
 ## How recognition works

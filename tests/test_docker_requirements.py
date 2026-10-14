@@ -38,7 +38,7 @@ def test_dockerfile_uses_uv_for_python_dependencies():
 
 def test_compose_passes_dotenv_values_to_palmgate_container():
     compose = Path("docker-compose.yml").read_text()
-    common = compose[compose.index("x-palmgate-common:") : compose.index("x-cloudflared-common:")]
+    common = compose[compose.index("  palmgate-api:") : compose.index("  palmgate-frontend:")]
 
     assert "env_file:" in common
     assert "- .env" in common
@@ -50,10 +50,11 @@ def test_compose_does_not_configure_old_notebook_rembg_path():
     assert "NOTEBOOK_REMBG" not in compose
 
 
-def test_env_example_selects_browser_debug_profile_by_default():
+def test_env_example_selects_debug_without_profiles_by_default():
     env_example = Path(".env.example").read_text()
 
-    assert "COMPOSE_PROFILES=browser" in env_example
+    assert "COMPOSE_PROFILES=" not in env_example
+    assert "CLOUDFLARE_TUNNEL_TOKEN" not in env_example
     assert "APP_DEBUG=true" in env_example
     assert "DEVICE_RUNTIME_ENABLED=" not in env_example
     assert "CAMERA_SOURCE=" not in env_example
@@ -73,33 +74,34 @@ def test_readme_documents_prebuilt_image_update_flow():
     assert "docker compose up --build" not in readme
 
 
-def test_usb_compose_uses_configurable_camera_device_path():
+def test_device_overlay_uses_configurable_camera_device_paths():
     compose = Path("docker-compose.yml").read_text()
+    device = Path("docker-compose.device.yml").read_text()
 
     assert "APP_DEBUG=${APP_DEBUG:-true}" in compose
     assert "CAMERA_SOURCE=" not in compose
     assert "DEVICE_RUNTIME_ENABLED=" not in compose
-    assert "ENTRY_CAMERA_DEVICE_PATH=/dev/video0" in compose
-    assert "EXIT_CAMERA_DEVICE_PATH=/dev/video2" in compose
-    assert 'source: "${ENTRY_CAMERA_DEVICE_PATH:-/dev/video0}"\n        target: /dev/video0' in compose
-    assert 'source: "${EXIT_CAMERA_DEVICE_PATH:-/dev/video2}"\n        target: /dev/video2' in compose
+    assert "ENTRY_CAMERA_DEVICE_PATH=/dev/video0" in device
+    assert "EXIT_CAMERA_DEVICE_PATH=/dev/video2" in device
+    assert "${ENTRY_CAMERA_DEVICE_PATH:-/dev/video0}:/dev/video0" in device
+    assert "${EXIT_CAMERA_DEVICE_PATH:-/dev/video2}:/dev/video2" in device
+    assert "  palmgate-api:" in device
+    assert "APP_DEBUG=" not in device
     assert "usb-046d_C270_HD_WEBCAM" not in compose
 
 
 def test_usb_compose_maps_gpiochip_for_lock_relay():
     compose = Path("docker-compose.yml").read_text()
 
-    assert "LOCK_GPIO_ENABLED=${LOCK_GPIO_ENABLED:-0}" in compose
-    assert "LOCK_GPIO_CHIP=${LOCK_GPIO_CHIP:-/dev/gpiochip0}" in compose
-    assert "LOCK_GPIO_LINE=${LOCK_GPIO_LINE:-75}" in compose
-    assert "LOCK_ACTIVE_LOW=${LOCK_ACTIVE_LOW:-1}" in compose
-    assert "LOCK_UNLOCK_MS=${LOCK_UNLOCK_MS:-2000}" in compose
+    gpio = Path("docker-compose.gpio.yml").read_text()
+    assert "  palmgate-api:" in gpio
+    assert "LOCK_GPIO_ENABLED=1" in gpio
     assert "${LOCK_GPIO_CHIP:-/dev/gpiochip0}:${LOCK_GPIO_CHIP:-/dev/gpiochip0}" not in compose
-    assert "${LOCK_GPIO_CHIP:-/dev/gpiochip0}:${LOCK_GPIO_CHIP:-/dev/gpiochip0}" in Path("docker-compose.gpio.yml").read_text()
+    assert "${LOCK_GPIO_CHIP:-/dev/gpiochip0}:${LOCK_GPIO_CHIP:-/dev/gpiochip0}" in gpio
 
 
-def test_usb_compose_uses_separate_preview_and_processing_intervals():
-    compose = Path("docker-compose.yml").read_text()
+def test_device_overlay_uses_separate_preview_and_processing_intervals():
+    compose = Path("docker-compose.device.yml").read_text()
 
     assert "DEVICE_PREVIEW_FRAME_INTERVAL_MS=33" in compose
     assert "DEVICE_FRAME_INTERVAL_MS=250" in compose
@@ -108,16 +110,14 @@ def test_usb_compose_uses_separate_preview_and_processing_intervals():
 
 def test_compose_mounts_repository_root_model():
     compose = Path("docker-compose.yml").read_text()
-    common = compose[compose.index("x-palmgate-common:") : compose.index("x-cloudflared-common:")]
-    volumes = common[common.index("  volumes:") : common.index("  # Optional")]
+    common = compose[compose.index("  palmgate-api:") : compose.index("  palmgate-frontend:")]
+    volumes = common[common.index("    volumes:"):]
     active_mounts = [
         line.strip()
         for line in volumes.splitlines()
         if line.strip().startswith("- ")
     ]
 
-    assert "  palmgate-api-browser:\n    <<: *palmgate-common" in compose
-    assert "  palmgate-api-usb:\n    <<: *palmgate-common" in compose
     assert "- ./model.tflite:/app/model.tflite:ro" in active_mounts
     assert "- ./hand_landmarker.task:/app/hand_landmarker.task:ro" in active_mounts
     assert "- palmgate-db:/data" in active_mounts
@@ -192,7 +192,7 @@ def test_dockerfile_stamps_palmgate_version():
 
 def test_compose_uses_prebuilt_ghcr_image_by_default():
     compose = Path("docker-compose.yml").read_text()
-    common = compose[compose.index("x-palmgate-common:") : compose.index("x-cloudflared-common:")]
+    common = compose[compose.index("  palmgate-api:") : compose.index("  palmgate-frontend:")]
 
     assert "image: ${PALMGATE_IMAGE:-ghcr.io/nhaidaar/palmprint-be:latest}" in common
     assert "build:" in common

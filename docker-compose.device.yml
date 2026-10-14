@@ -1,0 +1,11 @@
+# Include for non-debug operation on a Linux host with two USB cameras.
+services:
+  palmgate-api:
+    environment:
+      - ENTRY_CAMERA_DEVICE_PATH=/dev/video0
+      - EXIT_CAMERA_DEVICE_PATH=/dev/video2
+      - DEVICE_PREVIEW_FRAME_INTERVAL_MS=33
+      - DEVICE_FRAME_INTERVAL_MS=250
+    devices:
+      - "${ENTRY_CAMERA_DEVICE_PATH:-/dev/video0}:/dev/video0"
+      - "${EXIT_CAMERA_DEVICE_PATH:-/dev/video2}:/dev/video2"
