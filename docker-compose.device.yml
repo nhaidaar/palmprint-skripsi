@@ -9,5 +9,7 @@ services:
     devices:
       - source: "${ENTRY_CAMERA_DEVICE_PATH:-/dev/video0}"
         target: /dev/video0
+        permissions: rwm
       - source: "${EXIT_CAMERA_DEVICE_PATH:-/dev/video2}"
         target: /dev/video2
+        permissions: rwm

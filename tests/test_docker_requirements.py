@@ -84,8 +84,8 @@ def test_device_overlay_uses_configurable_camera_device_paths():
     assert "ENTRY_CAMERA_DEVICE_PATH=/dev/video0" in device
     assert "EXIT_CAMERA_DEVICE_PATH=/dev/video2" in device
     # Persistent USB paths contain colons, so each mapping needs explicit fields.
-    assert 'source: "${ENTRY_CAMERA_DEVICE_PATH:-/dev/video0}"\n        target: /dev/video0' in device
-    assert 'source: "${EXIT_CAMERA_DEVICE_PATH:-/dev/video2}"\n        target: /dev/video2' in device
+    assert 'source: "${ENTRY_CAMERA_DEVICE_PATH:-/dev/video0}"\n        target: /dev/video0\n        permissions: rwm' in device
+    assert 'source: "${EXIT_CAMERA_DEVICE_PATH:-/dev/video2}"\n        target: /dev/video2\n        permissions: rwm' in device
     assert "  palmgate-api:" in device
     assert "APP_DEBUG=" not in device
     assert "usb-046d_C270_HD_WEBCAM" not in compose
