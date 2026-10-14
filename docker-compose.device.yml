@@ -7,5 +7,7 @@ services:
       - DEVICE_PREVIEW_FRAME_INTERVAL_MS=33
       - DEVICE_FRAME_INTERVAL_MS=250
     devices:
-      - "${ENTRY_CAMERA_DEVICE_PATH:-/dev/video0}:/dev/video0"
-      - "${EXIT_CAMERA_DEVICE_PATH:-/dev/video2}:/dev/video2"
+      - source: "${ENTRY_CAMERA_DEVICE_PATH:-/dev/video0}"
+        target: /dev/video0
+      - source: "${EXIT_CAMERA_DEVICE_PATH:-/dev/video2}"
+        target: /dev/video2
